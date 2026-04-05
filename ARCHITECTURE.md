@@ -64,7 +64,8 @@ Audio capture lives in Rust (CPAL), not the frontend. Attempting mic capture fro
 
 ### Frontend: React + Vite
 
-- **shadcn/ui** — composable components, looks native enough on macOS
+- **flowbite-react** — Tailwind-based component library
+- **TanStack Router** — type-safe routing between views
 - **TanStack Query** — REST polling and cache management
 - **TanStack Virtual** — virtualized list for long transcripts (avoids DOM blowup on multi-hour sessions)
 - **Tauri event API** — receives live segment updates pushed from Rust as they arrive
@@ -189,7 +190,8 @@ Android is harder (no CoreML, model ONNX exports required) and should not constr
 |---|---|---|
 | App shell | Tauri v2 | Light, native WebView, iOS path, Rust sidecar support |
 | Frontend | React + Vite | Reusable on mobile, large ecosystem |
-| UI components | shadcn/ui | Composable, macOS-appropriate aesthetics |
+| UI components | flowbite-react | Tailwind-based component library |
+| Routing | TanStack Router | Type-safe routing |
 | Data fetching | TanStack Query | Cache + polling with minimal boilerplate |
 | Long lists | TanStack Virtual | DOM-safe for hour-long transcripts |
 | Audio capture | CPAL (Rust) | Direct device access, avoids WebView permission flow |
