@@ -25,8 +25,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
-rusqlite = { version = "0.32", features = ["bundled"] }
-rusqlite_migration = "1"
+rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite_migration = "2"
 reqwest = { version = "0.12", features = ["json", "multipart"] }
-cpal = "0.15"
+cpal = "0.17"
 
