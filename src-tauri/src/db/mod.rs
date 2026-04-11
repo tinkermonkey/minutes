@@ -1,4 +1,7 @@
 pub mod migrations;
+pub mod samples;
+pub mod segments;
+pub mod speakers;
 
 use rusqlite::Connection;
 use sqlite_vec::sqlite3_vec_init;

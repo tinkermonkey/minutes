@@ -1,8 +1,13 @@
+mod audio;
 mod client;
+mod commands;
 mod db;
+mod embed;
+mod events;
 mod state;
 
 use state::{AppState, SpeechSwiftStatus};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
@@ -35,6 +40,7 @@ pub fn run() {
                 db: Mutex::new(conn),
                 speech_swift: Mutex::new(SpeechSwiftStatus { reachable: false }),
                 speech_swift_url: base_url.clone(),
+                pipelines: Mutex::new(HashMap::new()),
             };
             app.manage(app_state);
 
@@ -58,7 +64,11 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_speech_swift_status])
+        .invoke_handler(tauri::generate_handler![
+            get_speech_swift_status,
+            commands::start_session,
+            commands::stop_session,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

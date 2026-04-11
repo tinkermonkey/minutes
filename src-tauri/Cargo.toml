@@ -31,6 +31,10 @@ sqlite-vec = "0"
 anyhow = "1"
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 cpal = "0.17"
+webrtc-vad = "0.4"
+fastembed = "4"
+hound = "3"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

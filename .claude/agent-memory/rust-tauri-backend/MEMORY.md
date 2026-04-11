@@ -5,3 +5,6 @@
 - [rusqlite migration pattern](rusqlite-migration-pattern.md) — vec0 virtual table created post-migration, not inside M::up
 - [Tauri trait imports](tauri-trait-imports.md) — non-obvious trait imports required for Tauri APIs
 - [tauri.conf.json macOS fields](tauri-conf-macos-fields.md) — correct field names for macOS bundle config
+- [cpal 0.17 API](cpal-017-api.md) — SampleRate is u32 alias, try_with_sample_rate returns Option, name() is deprecated
+- [VAD Send constraint](vad-send-constraint.md) — webrtc_vad::Vad is !Send; capture+VAD runs on OS thread, chunks flow to async consumer via mpsc
+- [TempDir SQLite test pattern](tempdir-sqlite-test-pattern.md) — must return (Connection, TempDir) from test helpers to avoid SQLITE_READONLY_DBMOVED
