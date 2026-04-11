@@ -123,6 +123,9 @@ pub fn run() {
             commands::speakers::merge_speakers,
             commands::speakers::delete_speaker,
             commands::speakers::get_speaker_sample_path,
+            commands::sessions::get_sessions,
+            commands::sessions::get_session,
+            commands::sessions::get_segments,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

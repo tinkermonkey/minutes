@@ -1,3 +1,4 @@
+pub mod sessions;
 pub mod speakers;
 
 use tauri::Manager;

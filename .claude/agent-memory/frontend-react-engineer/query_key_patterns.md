@@ -9,6 +9,11 @@ type: project
 | Key | Purpose |
 |---|---|
 | `['speech_swift_status']` | Speech-swift reachability boolean. staleTime: Infinity — only updated via Tauri event invalidation or setQueryData. |
+| `['speakers']` | All speakers list. Exported as `SPEAKERS_KEY` constant from `useSpeakers.ts`. Invalidated by rename/merge/delete mutations. |
+| `['speaker_sample', speechSwiftId]` | Voice sample file path for one speaker. |
+| `['sessions', filter]` | Paginated session list. Full filter object as second element — deep equality via TanStack Query. |
+| `['session', sessionId]` | Single session by numeric ID. |
+| `['segments', sessionId]` | All segments for a session. |
 
 ## Convention
 

@@ -1,6 +1,7 @@
 pub mod migrations;
 pub mod samples;
 pub mod segments;
+pub mod sessions;
 pub mod speakers;
 
 use rusqlite::Connection;

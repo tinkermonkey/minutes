@@ -11,7 +11,8 @@ type: project
 - `state.rs` — `AppState` struct: `db: Mutex<Connection>`, `speech_swift: Mutex<SpeechSwiftStatus>`, `speech_swift_url: String`, `pipelines: Mutex<HashMap<i64, oneshot::Sender<()>>>`
 - `db/mod.rs` — `open(path) -> anyhow::Result<Connection>`: registers sqlite-vec auto-extension, runs migrations, creates vec0 virtual table
 - `db/migrations.rs` — `migrations() -> Migrations<'static>`: all rusqlite_migration `M::up` definitions
-- `db/segments.rs` — `insert_segment`, `insert_segment_embedding`
+- `db/segments.rs` — `insert_segment`, `insert_segment_embedding`; `get_segments_with_speakers` (LEFT JOIN speakers, ordered by start_ms ASC) → `Vec<SegmentWithSpeaker>`
+- `db/sessions.rs` — `list_sessions(filter) -> SessionsPage` (paginated, nullable date params trick); `get_session_by_id` → `Option<SessionRow>`; both populate `participants` via `get_participants` helper
 - `db/speakers.rs` — `upsert_speaker` (insert-or-touch last_seen_at), returns `(Speaker, is_new)`; `list_with_stats`, `merge_speaker_local`, `delete_speaker_local`, `get_sample_path`
 - `db/samples.rs` — `insert_speaker_sample`
 - `client/mod.rs` — re-exports client submodules
@@ -24,6 +25,7 @@ type: project
 - `events/mod.rs` — `emit_segment_added`, `emit_new_speaker` helpers; `SegmentEvent`, `SpeakerEvent` payloads
 - `commands/mod.rs` — `start_session`, `stop_session` Tauri commands; `run_pipeline` spawns OS thread for capture+VAD, async task for network+DB
 - `commands/speakers.rs` — `get_speakers`, `rename_speaker`, `merge_speakers`, `delete_speaker`, `get_speaker_sample_path` Tauri commands
+- `commands/sessions.rs` — `get_sessions`, `get_session`, `get_segments` Tauri commands
 
 SQLite tables (migration 1): `sessions`, `segments` (speaker_id NOT NULL), `speaker_samples` (speaker_id NOT NULL), `speakers`
 Migration 2: makes `speaker_id` nullable in `segments` and `speaker_samples` (via table-rebuild for SQLite compat)

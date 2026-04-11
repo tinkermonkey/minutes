@@ -1,5 +1,16 @@
 use rusqlite::Connection;
 
+#[derive(Debug, serde::Serialize)]
+pub struct SegmentWithSpeaker {
+    pub id:              i64,
+    pub session_id:      i64,
+    pub speaker_id:      Option<i64>,
+    pub start_ms:        i64,
+    pub end_ms:          i64,
+    pub transcript_text: String,
+    pub display_name:    Option<String>,
+}
+
 pub struct NewSegment {
     pub session_id:      i64,
     pub speaker_id:      i64,
@@ -22,6 +33,36 @@ pub fn insert_segment(conn: &Connection, seg: &NewSegment) -> anyhow::Result<i64
         ],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+/// Return all segments for a session with the speaker's display name joined in.
+/// Ordered by start_ms ascending so the caller gets chronological order.
+pub fn get_segments_with_speakers(
+    conn: &Connection,
+    session_id: i64,
+) -> anyhow::Result<Vec<SegmentWithSpeaker>> {
+    let mut stmt = conn.prepare(
+        "SELECT sg.id, sg.session_id, sg.speaker_id, sg.start_ms, sg.end_ms,
+                sg.transcript_text, sp.display_name
+         FROM segments sg
+         LEFT JOIN speakers sp ON sp.speech_swift_id = sg.speaker_id
+         WHERE sg.session_id = ?1
+         ORDER BY sg.start_ms ASC",
+    )?;
+    let rows = stmt
+        .query_map([session_id], |row| {
+            Ok(SegmentWithSpeaker {
+                id:              row.get(0)?,
+                session_id:      row.get(1)?,
+                speaker_id:      row.get(2)?,
+                start_ms:        row.get(3)?,
+                end_ms:          row.get(4)?,
+                transcript_text: row.get(5)?,
+                display_name:    row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 /// Insert a 384-dim embedding for a segment into the sqlite-vec virtual table.

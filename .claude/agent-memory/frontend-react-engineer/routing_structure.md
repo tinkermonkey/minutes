@@ -18,6 +18,7 @@ type: project
 | `/record` | `RecordRoute` | `src/routes/record.tsx` |
 | `/speakers` | `SpeakersRoute` | `src/routes/speakers.tsx` |
 | `/sessions` | `SessionsRoute` | `src/routes/sessions.tsx` |
+| `/sessions/$sessionId` | `SessionDetailRoute` | `src/routes/sessions.$sessionId.tsx` |
 | `/search` | `SearchRoute` | `src/routes/search.tsx` |
 
 ## Active Link Detection

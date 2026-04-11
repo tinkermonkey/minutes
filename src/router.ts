@@ -8,6 +8,7 @@ import { RootLayout } from './routes/__root';
 import { RecordRoute } from './routes/record';
 import { SpeakersRoute } from './routes/speakers';
 import { SessionsRoute } from './routes/sessions';
+import { SessionDetailRoute } from './routes/sessions.$sessionId';
 import { SearchRoute } from './routes/search';
 
 const rootRoute = createRootRoute({
@@ -40,6 +41,12 @@ const sessionsRoute = createRoute({
   component: SessionsRoute,
 });
 
+const sessionDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sessions/$sessionId',
+  component: SessionDetailRoute,
+});
+
 const searchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/search',
@@ -51,6 +58,7 @@ const routeTree = rootRoute.addChildren([
   recordRoute,
   speakersRoute,
   sessionsRoute,
+  sessionDetailRoute,
   searchRoute,
 ]);
 

@@ -30,6 +30,14 @@ type: project
 | `segment_added` | `Segment` | Live transcript segment. Payload shape: `{id, session_id, speaker_id, speaker_label, display_name, start_ms, end_ms, transcript_text}` |
 | `new_speaker` | `SpeakerNotification` | New speaker detected. Payload: `{id, speech_swift_id, display_name}`. Used to show NewSpeakerBanner. |
 
+## Stage 4 — Session History Commands
+
+| Command | Signature | Notes |
+|---|---|---|
+| `get_sessions` | `(filter: SessionFilter) -> SessionsPage` | Paginated + filtered session list. Arg key is `filter`. `SessionFilter` has snake_case fields: `start_date, end_date, sort_by, sort_dir, page, page_size`. |
+| `get_session` | `(sessionId: i64) -> Session \| null` | Single session by ID. Arg key `sessionId`. Returns null if not found. |
+| `get_segments` | `(sessionId: i64) -> SegmentWithSpeaker[]` | All segments for a session with resolved speaker name. Arg key `sessionId`. |
+
 **Why:** These cannot be derived from reading the frontend code alone — they are the Rust-side contract.
 
 **How to apply:** When adding any new invoke() call or listen() subscription, verify the command/event name matches exactly what Rust exposes. Use these as the ground truth for the current stage.
