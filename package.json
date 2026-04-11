@@ -12,12 +12,17 @@
   "dependencies": {
     "@tanstack/react-query": "^5.96.2",
     "@tanstack/react-router": "^1.168.10",
+    "@tanstack/react-table": "^8.21.3",
+    "@tanstack/react-virtual": "^3.13.23",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "flowbite-react": "^0.12.17",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "tailwindcss": "^4.2.2"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
