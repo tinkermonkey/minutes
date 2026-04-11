@@ -11,6 +11,13 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
+fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time must be after Unix epoch")
+        .as_millis() as i64
+}
+
 /// Returns whether the speech-swift audio-server was reachable at startup.
 ///
 /// The frontend can call this at any time to get the last-known status.
@@ -46,6 +53,8 @@ pub fn run() {
 
             // Probe the audio-server in the background; push an event if it is
             // unreachable so the frontend can show a warning immediately.
+            // On success, sync the full speaker registry so the local DB stays
+            // consistent with speech-swift's state.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let reachable = client::speech_swift::health_check(&base_url).await;
@@ -59,6 +68,47 @@ pub fn run() {
                 }
                 if !reachable {
                     let _ = handle.emit("speech_swift_unreachable", ());
+                    return;
+                }
+
+                // Full registry sync: upsert every known speaker and propagate
+                // display names from speech-swift into the local DB.
+                match client::speech_swift::list_speakers(&base_url).await {
+                    Err(e) => eprintln!("startup registry sync failed: {e}"),
+                    Ok(records) => {
+                        let state = handle.state::<AppState>();
+                        let now_ms = unix_ms();
+                        let db = state.db.lock().expect("db mutex poisoned");
+                        for record in records {
+                            match db::speakers::upsert_speaker(&db, record.id, now_ms) {
+                                Err(e) => {
+                                    eprintln!("registry sync error for speaker {}: {e}", record.id)
+                                }
+                                Ok((speaker, _is_new)) => {
+                                    // Sync display_name from speech-swift when present.
+                                    if record.display_name.is_some() {
+                                        let _ = db.execute(
+                                            "UPDATE speakers SET display_name = ?1 \
+                                             WHERE speech_swift_id = ?2",
+                                            rusqlite::params![record.display_name, record.id],
+                                        );
+                                    }
+                                    // Emit new_speaker for speakers still lacking a name so
+                                    // the frontend can prompt the user to label them.
+                                    if speaker.display_name.is_none() {
+                                        let _ = handle.emit(
+                                            "new_speaker",
+                                            events::SpeakerEvent {
+                                                id:              speaker.id,
+                                                speech_swift_id: speaker.speech_swift_id,
+                                                display_name:    speaker.display_name,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             });
 
@@ -68,6 +118,11 @@ pub fn run() {
             get_speech_swift_status,
             commands::start_session,
             commands::stop_session,
+            commands::speakers::get_speakers,
+            commands::speakers::rename_speaker,
+            commands::speakers::merge_speakers,
+            commands::speakers::delete_speaker,
+            commands::speakers::get_speaker_sample_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

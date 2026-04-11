@@ -12,6 +12,16 @@ type: project
 | `start_session` | `() -> i64` | Starts recording, returns session ID as number in TS. |
 | `stop_session` | `(sessionId: i64) -> void` | Stops recording for the given session. Arg key is `sessionId` (camelCase). |
 
+## Stage 3 — Speaker Registry Commands
+
+| Command | Signature | Notes |
+|---|---|---|
+| `get_speakers` | `() -> Speaker[]` | Returns all speakers with stats. Snake_case fields: `id, speech_swift_id, display_name, notes, first_seen_at, last_seen_at, session_count`. |
+| `rename_speaker` | `(speechSwiftId: number, name: string) -> void` | Arg keys are camelCase. |
+| `merge_speakers` | `(srcId: number, dstId: number) -> void` | Merges src into dst. All segments re-attributed. |
+| `delete_speaker` | `(speechSwiftId: number) -> void` | Deletes speaker; segments remain but lose attribution. |
+| `get_speaker_sample_path` | `(speechSwiftId: number) -> string \| null` | Returns local file path for voice sample. Use `convertFileSrc()` from `@tauri-apps/api/core` to get a playable URL. |
+
 ## Tauri Events
 
 | Event | Payload | Notes |

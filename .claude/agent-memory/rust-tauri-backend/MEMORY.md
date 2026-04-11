@@ -8,3 +8,4 @@
 - [cpal 0.17 API](cpal-017-api.md) — SampleRate is u32 alias, try_with_sample_rate returns Option, name() is deprecated
 - [VAD Send constraint](vad-send-constraint.md) — webrtc_vad::Vad is !Send; capture+VAD runs on OS thread, chunks flow to async consumer via mpsc
 - [TempDir SQLite test pattern](tempdir-sqlite-test-pattern.md) — must return (Connection, TempDir) from test helpers to avoid SQLITE_READONLY_DBMOVED
+- [rusqlite query_map lifetime](rusqlite-query-map-lifetime.md) — collect into a let binding before stmt goes out of scope; tail-expression chain hits E0597

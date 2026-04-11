@@ -15,3 +15,17 @@ type: project
 `useStopSession()` — useMutation wrapping `invoke('stop_session', { sessionId })`. Takes `sessionId: number`.
 
 **Note:** `stop_session` argument key must be `sessionId` (camelCase) to match the Tauri command parameter name.
+
+## src/hooks/useSpeakers.ts
+
+Stage 3 Speaker Registry hooks. Query key constant: `SPEAKERS_KEY = ['speakers'] as const` (exported).
+
+`useSpeakers()` — query for all speakers. Returns `Speaker[]`.
+
+`useRenameSpeaker()` — mutation `{ speechSwiftId, name }`. Invalidates `SPEAKERS_KEY` on success.
+
+`useMergeSpeakers()` — mutation `{ srcId, dstId }`. Invalidates `SPEAKERS_KEY` on success.
+
+`useDeleteSpeaker()` — mutation `(speechSwiftId: number)`. Invalidates `SPEAKERS_KEY` on success.
+
+`useSpeakerSamplePath(speechSwiftId)` — query for voice sample path. Query key `['speaker_sample', speechSwiftId]`. Returns `string | null`. Disabled when `speechSwiftId <= 0`.

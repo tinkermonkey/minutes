@@ -1,3 +1,5 @@
+pub mod speakers;
+
 use tauri::Manager;
 use tokio::sync::oneshot;
 

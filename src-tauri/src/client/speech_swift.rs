@@ -40,6 +40,61 @@ pub async fn transcribe_chunk(
     Ok(resp)
 }
 
+/// A speaker record returned by `GET /registry/speakers`.
+#[derive(Debug, serde::Deserialize)]
+pub struct SpeakerRecord {
+    pub id:           i64,
+    pub display_name: Option<String>,
+    pub notes:        Option<String>,
+}
+
+/// Fetch the full speaker registry from the audio-server.
+pub async fn list_speakers(base_url: &str) -> anyhow::Result<Vec<SpeakerRecord>> {
+    let resp = reqwest::get(format!("{}/registry/speakers", base_url))
+        .await?
+        .error_for_status()?
+        .json::<Vec<SpeakerRecord>>()
+        .await?;
+    Ok(resp)
+}
+
+/// Set the display name for a speaker in the audio-server registry.
+pub async fn rename_speaker(base_url: &str, speech_swift_id: i64, name: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    client
+        .patch(format!("{}/registry/speakers/{}", base_url, speech_swift_id))
+        .json(&serde_json::json!({ "display_name": name }))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
+/// Merge `src_id` into `dst_id` in the audio-server registry.
+///
+/// After this call, speech-swift treats all occurrences of `src` as `dst`.
+pub async fn merge_speakers(base_url: &str, src_id: i64, dst_id: i64) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{}/registry/speakers/merge", base_url))
+        .json(&serde_json::json!({ "src": src_id, "dst": dst_id }))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
+/// Delete a speaker from the audio-server registry.
+pub async fn delete_speaker(base_url: &str, speech_swift_id: i64) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    client
+        .delete(format!("{}/registry/speakers/{}", base_url, speech_swift_id))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
 /// Returns `true` if the speech-swift audio-server is reachable and healthy.
 ///
 /// A GET to `/health` returning any 2xx status is considered success. Any

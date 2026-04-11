@@ -1,44 +1,75 @@
 use rusqlite_migration::{Migrations, M};
 
 pub fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(
-        r#"
-            CREATE TABLE sessions (
-                id          INTEGER PRIMARY KEY,
-                created_at  INTEGER NOT NULL,
-                label       TEXT,
-                duration_ms INTEGER,
-                source      TEXT NOT NULL
-            );
+    Migrations::new(vec![
+        M::up(
+            r#"
+                CREATE TABLE sessions (
+                    id          INTEGER PRIMARY KEY,
+                    created_at  INTEGER NOT NULL,
+                    label       TEXT,
+                    duration_ms INTEGER,
+                    source      TEXT NOT NULL
+                );
 
-            CREATE TABLE segments (
-                id              INTEGER PRIMARY KEY,
-                session_id      INTEGER NOT NULL REFERENCES sessions(id),
-                speaker_id      INTEGER NOT NULL,
-                start_ms        INTEGER NOT NULL,
-                end_ms          INTEGER NOT NULL,
-                transcript_text TEXT NOT NULL
-            );
+                CREATE TABLE segments (
+                    id              INTEGER PRIMARY KEY,
+                    session_id      INTEGER NOT NULL REFERENCES sessions(id),
+                    speaker_id      INTEGER NOT NULL,
+                    start_ms        INTEGER NOT NULL,
+                    end_ms          INTEGER NOT NULL,
+                    transcript_text TEXT NOT NULL
+                );
 
-            CREATE TABLE speaker_samples (
-                id          INTEGER PRIMARY KEY,
-                speaker_id  INTEGER NOT NULL,
-                session_id  INTEGER NOT NULL REFERENCES sessions(id),
-                start_ms    INTEGER NOT NULL,
-                end_ms      INTEGER NOT NULL,
-                audio_path  TEXT NOT NULL
-            );
+                CREATE TABLE speaker_samples (
+                    id          INTEGER PRIMARY KEY,
+                    speaker_id  INTEGER NOT NULL,
+                    session_id  INTEGER NOT NULL REFERENCES sessions(id),
+                    start_ms    INTEGER NOT NULL,
+                    end_ms      INTEGER NOT NULL,
+                    audio_path  TEXT NOT NULL
+                );
 
-            CREATE TABLE speakers (
-                id              INTEGER PRIMARY KEY,
-                speech_swift_id INTEGER NOT NULL UNIQUE,
-                display_name    TEXT,
-                notes           TEXT,
-                first_seen_at   INTEGER NOT NULL,
-                last_seen_at    INTEGER NOT NULL
-            );
-        "#,
-    )])
+                CREATE TABLE speakers (
+                    id              INTEGER PRIMARY KEY,
+                    speech_swift_id INTEGER NOT NULL UNIQUE,
+                    display_name    TEXT,
+                    notes           TEXT,
+                    first_seen_at   INTEGER NOT NULL,
+                    last_seen_at    INTEGER NOT NULL
+                );
+            "#,
+        ),
+        M::up(
+            r#"
+                -- Recreate segments with nullable speaker_id (for speaker deletion support)
+                CREATE TABLE segments_new (
+                    id              INTEGER PRIMARY KEY,
+                    session_id      INTEGER NOT NULL REFERENCES sessions(id),
+                    speaker_id      INTEGER,
+                    start_ms        INTEGER NOT NULL,
+                    end_ms          INTEGER NOT NULL,
+                    transcript_text TEXT NOT NULL
+                );
+                INSERT INTO segments_new SELECT * FROM segments;
+                DROP TABLE segments;
+                ALTER TABLE segments_new RENAME TO segments;
+
+                -- Recreate speaker_samples with nullable speaker_id
+                CREATE TABLE speaker_samples_new (
+                    id          INTEGER PRIMARY KEY,
+                    speaker_id  INTEGER,
+                    session_id  INTEGER NOT NULL REFERENCES sessions(id),
+                    start_ms    INTEGER NOT NULL,
+                    end_ms      INTEGER NOT NULL,
+                    audio_path  TEXT NOT NULL
+                );
+                INSERT INTO speaker_samples_new SELECT * FROM speaker_samples;
+                DROP TABLE speaker_samples;
+                ALTER TABLE speaker_samples_new RENAME TO speaker_samples;
+            "#,
+        ),
+    ])
 }
 
 #[cfg(test)]
