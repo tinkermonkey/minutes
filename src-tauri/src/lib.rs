@@ -1,3 +1,4 @@
+mod api;
 mod audio;
 mod client;
 mod commands;
@@ -36,18 +37,28 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
 
-            let conn = db::open(&data_dir.join("minutes.db"))?;
+            let db_path = data_dir.join("minutes.db");
+            let conn = db::open(&db_path)?;
 
-            let base_url = "http://localhost:8080".to_string();
+            // Load persisted settings before constructing AppState.
+            let preferred_device =
+                db::settings::get(&conn, "preferred_audio_device").unwrap_or(None);
+
+            let port = db::settings::get(&conn, "speech_swift_port")
+                .unwrap_or(None)
+                .unwrap_or_else(|| "8080".to_string());
+            let base_url = format!("http://localhost:{port}");
             let app_state = AppState {
                 db: Mutex::new(conn),
                 speech_swift: Mutex::new(SpeechSwiftStatus { reachable: false }),
                 speech_swift_url: base_url.clone(),
                 pipelines: Mutex::new(HashMap::new()),
+                preferred_device: Mutex::new(preferred_device),
             };
             app.manage(app_state);
 
@@ -112,12 +123,22 @@ pub fn run() {
                 }
             });
 
+            // Spawn the read-only REST API on 127.0.0.1:8765.
+            let api_db_path = db_path.clone();
+            tauri::async_runtime::spawn(async move {
+                api::serve(api_db_path).await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_speech_swift_status,
             commands::start_session,
             commands::stop_session,
+            commands::devices::get_audio_devices,
+            commands::devices::set_audio_device,
+            commands::health::retry_health_check,
+            commands::health::set_speech_swift_port,
             commands::speakers::get_speakers,
             commands::speakers::rename_speaker,
             commands::speakers::merge_speakers,

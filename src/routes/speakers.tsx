@@ -3,19 +3,18 @@ import { useSpeakers, useMergeSpeakers, useDeleteSpeaker } from '../hooks/useSpe
 import { SpeakerCard } from '../components/speakers/SpeakerCard';
 import { MergeConfirmModal } from '../components/speakers/MergeConfirmModal';
 import { DeleteConfirmModal } from '../components/speakers/DeleteConfirmModal';
+import { SpeakerCardSkeleton } from '../components/speakers/SpeakerCardSkeleton';
+import { QueryError } from '../components/QueryError';
 import type { Speaker } from '../types/speaker';
 import type { MergeState } from '../components/speakers/MergeSelectButton';
 
 export function SpeakersRoute() {
-  const { data: speakers = [], isLoading } = useSpeakers();
+  const { data: speakers = [], isLoading, isError, error, refetch } = useSpeakers();
   const [mergeState, setMergeState] = useState<MergeState>({ phase: 'idle' });
   const [deleteTarget, setDeleteTarget] = useState<Speaker | null>(null);
   const mergeSpeakers = useMergeSpeakers();
   const deleteSpeaker = useDeleteSpeaker();
 
-  // isRecording would come from a shared context in a full app;
-  // Stage 2 owns recording state in RecordRoute — pass false for now.
-  // The delete button guard is a best-effort UX improvement.
   const isRecording = false;
 
   function handleMergeSelect(selectedId: number) {
@@ -39,8 +38,17 @@ export function SpeakersRoute() {
   if (isLoading) {
     return (
       <div className="p-6">
-        <p className="text-gray-500">Loading speakers...</p>
+        <SpeakerCardSkeleton />
       </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <QueryError
+        message={error instanceof Error ? error.message : String(error)}
+        onRetry={() => refetch()}
+      />
     );
   }
 

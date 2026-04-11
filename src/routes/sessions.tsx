@@ -5,6 +5,8 @@ import { ParticipantChips } from '../components/sessions/ParticipantChips';
 import { SourceBadge } from '../components/sessions/SourceBadge';
 import { SortableHeader } from '../components/sessions/SortableHeader';
 import { SessionDateFilter } from '../components/sessions/SessionDateFilter';
+import { SessionTableSkeleton } from '../components/sessions/SessionTableSkeleton';
+import { QueryError } from '../components/QueryError';
 import { formatDate, formatTime, formatDuration } from '../lib/format';
 import type { SessionFilter, SortBy } from '../types/session';
 
@@ -19,7 +21,7 @@ export function SessionsRoute() {
     page_size:  20,
   });
 
-  const { data, isLoading, isFetching } = useSessions(filter);
+  const { data, isLoading, isFetching, isError, error, refetch } = useSessions(filter);
   const sessions = data?.sessions ?? [];
   const totalCount = data?.total_count ?? 0;
   const totalPages = Math.ceil(totalCount / filter.page_size);
@@ -52,7 +54,12 @@ export function SessionsRoute() {
       </div>
 
       {isLoading ? (
-        <div className="text-gray-400 text-sm">Loading sessions...</div>
+        <SessionTableSkeleton />
+      ) : isError ? (
+        <QueryError
+          message={error instanceof Error ? error.message : String(error)}
+          onRetry={() => refetch()}
+        />
       ) : (
         <div className={isFetching ? 'opacity-60 pointer-events-none' : ''}>
           <table className="w-full text-sm border-collapse">

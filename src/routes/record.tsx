@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { useQueryClient } from '@tanstack/react-query';
+import { invoke } from '@tauri-apps/api/core';
+import { useQueryClient, useMutation } from '@tanstack/react-query';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useSpeechSwiftStatus } from '../hooks/useSpeechSwiftStatus';
 import { useStartSession, useStopSession } from '../hooks/useSession';
 import { RecordButton } from '../components/RecordButton';
 import { SessionStatusBadge } from '../components/SessionStatusBadge';
 import { TranscriptPanel } from '../components/TranscriptPanel';
 import { NewSpeakerBanner } from '../components/NewSpeakerBanner';
+import { SpeechSwiftErrorPanel } from '../components/SpeechSwiftErrorPanel';
 import type { Segment, SpeakerNotification } from '../types/transcript';
 
 type SessionState =
@@ -24,6 +27,26 @@ export function RecordRoute() {
   const [segments, setSegments]         = useState<Segment[]>([]);
   const [showNewSpeakerBanner, setShowNewSpeakerBanner] = useState(false);
   const [elapsed, setElapsed]           = useState(0);
+
+  const retryHealth = useMutation({
+    mutationFn: (): Promise<boolean> => invoke('retry_health_check'),
+    onSuccess: (reachable) => {
+      queryClient.setQueryData(['speech_swift_status'], reachable);
+    },
+  });
+
+  // Window title effect
+  useEffect(() => {
+    const appWindow = getCurrentWebviewWindow();
+    if (sessionState.status === 'recording') {
+      appWindow.setTitle('Recording… — Minutes');
+    } else {
+      appWindow.setTitle('Minutes');
+    }
+    return () => {
+      appWindow.setTitle('Minutes');
+    };
+  }, [sessionState.status]);
 
   // Elapsed timer — ticks once per second while recording
   useEffect(() => {
@@ -79,13 +102,22 @@ export function RecordRoute() {
     setSessionState({ status: 'idle' });
   }
 
+  if (speechSwiftOk === false) {
+    return (
+      <SpeechSwiftErrorPanel
+        onRetry={() => retryHealth.mutate()}
+        isRetrying={retryHealth.isPending}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4 p-6 h-full">
       {/* Controls row */}
       <div className="flex items-center gap-4">
         <RecordButton
           status={sessionState.status}
-          disabled={speechSwiftOk === false}
+          disabled={!speechSwiftOk}
           onStart={handleStart}
           onStop={handleStop}
         />

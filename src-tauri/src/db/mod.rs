@@ -3,6 +3,7 @@ pub mod samples;
 pub mod search;
 pub mod segments;
 pub mod sessions;
+pub mod settings;
 pub mod speakers;
 
 use rusqlite::Connection;
@@ -44,6 +45,21 @@ pub fn open(db_path: &Path) -> anyhow::Result<Connection> {
     "#,
     )?;
 
+    Ok(conn)
+}
+
+/// Open a read-only SQLite connection to an existing database.
+///
+/// Used by the axum REST API server for concurrent reads without interfering
+/// with the single write connection in `AppState`. The sqlite-vec extension is
+/// available on this connection automatically because `sqlite3_auto_extension`
+/// is registered globally by `open()` at app startup — it applies to every new
+/// connection opened in the process, including read-only ones.
+pub fn open_readonly(db_path: &Path) -> anyhow::Result<Connection> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
     Ok(conn)
 }
 

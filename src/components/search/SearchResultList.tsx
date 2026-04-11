@@ -1,4 +1,5 @@
 import { SearchResultCard } from './SearchResultCard';
+import { SearchResultSkeleton } from './SearchResultSkeleton';
 import type { SearchResult } from '../../types/search';
 
 interface Props {
@@ -19,11 +20,7 @@ export function SearchResultList({ results, isPending, query, hasSearched, error
   }
 
   if (isPending) {
-    return (
-      <div className="flex items-center justify-center py-12 text-gray-400 text-sm">
-        Searching...
-      </div>
-    );
+    return <SearchResultSkeleton />;
   }
 
   if (!hasSearched) {

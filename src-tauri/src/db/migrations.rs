@@ -69,6 +69,14 @@ pub fn migrations() -> Migrations<'static> {
                 ALTER TABLE speaker_samples_new RENAME TO speaker_samples;
             "#,
         ),
+        M::up(
+            r#"
+                CREATE TABLE IF NOT EXISTS settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+            "#,
+        ),
     ])
 }
 
@@ -100,5 +108,6 @@ mod tests {
         assert!(tables.contains(&"segments".to_string()));
         assert!(tables.contains(&"speaker_samples".to_string()));
         assert!(tables.contains(&"speakers".to_string()));
+        assert!(tables.contains(&"settings".to_string()));
     }
 }

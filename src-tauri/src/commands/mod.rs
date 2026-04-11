@@ -1,3 +1,5 @@
+pub mod devices;
+pub mod health;
 pub mod search;
 pub mod sessions;
 pub mod speakers;

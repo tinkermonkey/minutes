@@ -20,4 +20,6 @@ pub struct AppState {
     /// Active recording pipelines keyed by session_id.
     /// Sending on the channel stops the corresponding pipeline task.
     pub pipelines: Mutex<HashMap<i64, oneshot::Sender<()>>>,
+    /// User-selected audio input device name. `None` means use the system default.
+    pub preferred_device: Mutex<Option<String>>,
 }
