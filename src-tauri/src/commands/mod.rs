@@ -1,3 +1,4 @@
+pub mod search;
 pub mod sessions;
 pub mod speakers;
 

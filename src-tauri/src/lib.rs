@@ -126,6 +126,7 @@ pub fn run() {
             commands::sessions::get_sessions,
             commands::sessions::get_session,
             commands::sessions::get_segments,
+            commands::search::search_segments,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

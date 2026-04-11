@@ -1,5 +1,6 @@
 pub mod migrations;
 pub mod samples;
+pub mod search;
 pub mod segments;
 pub mod sessions;
 pub mod speakers;

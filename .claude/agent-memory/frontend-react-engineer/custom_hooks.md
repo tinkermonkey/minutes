@@ -39,3 +39,9 @@ Stage 4 Session History hooks.
 `useSession(sessionId: number)` — single session query. Query key `['session', sessionId]`. Disabled when `sessionId <= 0`.
 
 `useSegments(sessionId: number)` — segments with speaker names query. Query key `['segments', sessionId]`. Disabled when `sessionId <= 0`.
+
+## src/hooks/useSearch.ts
+
+Stage 5 Semantic Search hook.
+
+`useSearch()` — useMutation wrapping `invoke('search_segments', { query, filters })`. Takes `{ query: string; filters: SearchFilters }`. Returns `SearchResult[]`. No query key (mutation, not query). No side-effect invalidations needed.

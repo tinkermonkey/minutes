@@ -38,6 +38,12 @@ type: project
 | `get_session` | `(sessionId: i64) -> Session \| null` | Single session by ID. Arg key `sessionId`. Returns null if not found. |
 | `get_segments` | `(sessionId: i64) -> SegmentWithSpeaker[]` | All segments for a session with resolved speaker name. Arg key `sessionId`. |
 
+## Stage 5 — Semantic Search Commands
+
+| Command | Signature | Notes |
+|---|---|---|
+| `search_segments` | `(query: string, filters: SearchFilters) -> SearchResult[]` | Semantic search. `SearchFilters` has snake_case fields: `speaker_id, start_date, end_date, limit?`. Returns `SearchResult[]` with `segment_id, transcript_text, start_ms, end_ms, speaker_id, display_name, session_id, session_label, session_created_at, score`. |
+
 **Why:** These cannot be derived from reading the frontend code alone — they are the Rust-side contract.
 
 **How to apply:** When adding any new invoke() call or listen() subscription, verify the command/event name matches exactly what Rust exposes. Use these as the ground truth for the current stage.
