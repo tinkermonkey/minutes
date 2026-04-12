@@ -2981,7 +2981,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
- "uuid",
  "webrtc-vad",
 ]
 

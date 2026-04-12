@@ -30,6 +30,10 @@ pub fn open(db_path: &Path) -> anyhow::Result<Connection> {
 
     let mut conn = Connection::open(db_path)?;
 
+    // WAL mode allows concurrent reads (e.g. the axum REST API) alongside the
+    // single writer without blocking. Must be set before migrations run.
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+
     migrations::migrations().to_latest(&mut conn)?;
 
     // segment_embeddings stores 384-dim float vectors (all-MiniLM-L6-v2 size).
