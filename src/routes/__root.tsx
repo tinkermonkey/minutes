@@ -81,14 +81,14 @@ export function RootLayout() {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Warning banner */}
-        {speechSwiftOk === false && (
+        {/* Warning banner — hidden on /record because SpeechSwiftErrorPanel handles that route */}
+        {speechSwiftOk === false && currentPath !== '/record' && (
           <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex items-center gap-2 text-amber-800 text-sm">
             <span>Warning:</span>
             <span>speech-swift is unreachable — recording is disabled.</span>
           </div>
         )}
-        <main className="flex-1 overflow-auto">
+        <main className="flex-1 overflow-auto flex flex-col">
           <RouteErrorBoundary>
             <Outlet />
           </RouteErrorBoundary>
