@@ -59,3 +59,12 @@ pub fn get_speaker_sample_path(
     let db = state.db.lock().expect("db mutex poisoned");
     db::speakers::get_sample_path(&db, speech_swift_id).map_err(|e| e.to_string())
 }
+
+/// Read a WAV sample file and return its raw bytes.
+///
+/// The frontend uses this to construct a Blob URL for the <audio> element,
+/// bypassing the need for the Tauri asset protocol.
+#[tauri::command]
+pub fn read_audio_bytes(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| format!("read_audio_bytes: {e}"))
+}

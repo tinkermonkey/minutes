@@ -40,7 +40,5 @@
       "infoPlist": "Info.plist"
     }
   },
-  "plugins": {
-    "dialog": {}
-  }
+  "plugins": {}
 }

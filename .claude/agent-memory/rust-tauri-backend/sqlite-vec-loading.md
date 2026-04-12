@@ -21,3 +21,5 @@ This is a process-level registration — once called, every `Connection` opened 
 **Why not `load_extension`:** The `load_extension` path requires the `load_extension` feature flag on rusqlite and works by path to a `.dylib`. The `auto_extension` path is self-contained, works with the bundled SQLite, and is the pattern endorsed by the sqlite-vec crate itself.
 
 **Idempotency:** Calling `sqlite3_auto_extension` with the same function pointer multiple times is safe (SQLite deduplicates).
+
+**Read-only connections:** `db::open_readonly` does NOT need to re-register the extension. The `auto_extension` is process-global — it applies to all connections opened after registration, including read-only ones opened via `Connection::open_with_flags`. As long as `db::open()` (which registers the auto_extension) is called first at startup, all subsequent `open_readonly` calls get the extension automatically.

@@ -1,17 +1,26 @@
 /// Segment returned by the audio-server for a single speaker turn.
+///
+/// `start` and `end` are in **seconds** (float). Convert to ms with
+/// `(start * 1000.0) as i64` at the call site.
 #[derive(Debug, serde::Deserialize)]
 pub struct SegmentResponse {
     pub speaker_id:    i64,
     pub speaker_label: String,
-    pub start_ms:      i64,
-    pub end_ms:        i64,
+    /// Segment start time in seconds from the beginning of the submitted audio.
+    pub start:         f64,
+    /// Segment end time in seconds.
+    pub end:           f64,
+    #[allow(dead_code)]
+    pub duration:      f64,
     pub transcript:    String,
 }
 
 /// Top-level response from `POST /registry/sessions`.
 #[derive(Debug, serde::Deserialize)]
 pub struct SessionResponse {
-    pub segments: Vec<SegmentResponse>,
+    #[allow(dead_code)]
+    pub num_speakers: u32,
+    pub segments:     Vec<SegmentResponse>,
 }
 
 /// Submit a WAV chunk to the audio-server for diarization + transcription.
@@ -26,7 +35,7 @@ pub async fn transcribe_chunk(
     let part = reqwest::multipart::Part::bytes(wav_bytes)
         .file_name("chunk.wav")
         .mime_str("audio/wav")?;
-    let form = reqwest::multipart::Form::new().part("audio", part);
+    let form = reqwest::multipart::Form::new().part("file", part);
 
     let resp = client
         .post(format!("{}/registry/sessions", base_url))
@@ -63,7 +72,7 @@ pub async fn rename_speaker(base_url: &str, speech_swift_id: i64, name: &str) ->
     let client = reqwest::Client::new();
     client
         .patch(format!("{}/registry/speakers/{}", base_url, speech_swift_id))
-        .json(&serde_json::json!({ "display_name": name }))
+        .json(&serde_json::json!({ "displayName": name }))
         .send()
         .await?
         .error_for_status()?;

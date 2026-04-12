@@ -16,6 +16,17 @@ use crate::{
     state::AppState,
 };
 
+/// Compute the root mean square of a sample slice.
+///
+/// Returns `0.0` for an empty slice rather than NaN.
+fn compute_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt()
+}
+
 /// Current time as milliseconds since the Unix epoch.
 ///
 /// Uses `expect` because `SystemTime::now()` returning before the epoch is an
@@ -49,8 +60,6 @@ fn save_wav_chunk(app: &tauri::AppHandle, session_id: i64, start_ms: u64, bytes:
 struct AudioChunk {
     wav_bytes: Vec<u8>,
     start_ms:  u64,
-    /// Carried for completeness and future use (e.g. display, trimming).
-    #[allow(dead_code)]
     end_ms:    u64,
 }
 
@@ -71,6 +80,13 @@ async fn handle_chunk(
     let state = app.state::<AppState>();
     let base_url = state.speech_swift_url.clone();
 
+    events::emit_chunk_sent(app, events::ChunkSentEvent {
+        start_ms:   chunk.start_ms,
+        end_ms:     chunk.end_ms,
+        sent_at_ms: unix_ms() as u64,
+    });
+
+    let t0 = std::time::Instant::now();
     let response = match speech_swift::transcribe_chunk(&base_url, chunk.wav_bytes).await {
         Ok(r) => r,
         Err(e) => {
@@ -78,6 +94,7 @@ async fn handle_chunk(
             return;
         }
     };
+    let response_ms = t0.elapsed().as_millis() as u64;
 
     // --- DB work: acquire lock, do all inserts, release before any await. ---
     let now_ms = unix_ms();
@@ -101,8 +118,8 @@ async fn handle_chunk(
                 &NewSegment {
                     session_id,
                     speaker_id: seg.speaker_id,
-                    start_ms:   seg.start_ms,
-                    end_ms:     seg.end_ms,
+                    start_ms:   (seg.start * 1000.0) as i64,
+                    end_ms:     (seg.end   * 1000.0) as i64,
                     transcript_text: seg.transcript.clone(),
                 },
             ) {
@@ -117,8 +134,8 @@ async fn handle_chunk(
                 &db,
                 speaker.id,
                 session_id,
-                seg.start_ms,
-                seg.end_ms,
+                (seg.start * 1000.0) as i64,
+                (seg.end   * 1000.0) as i64,
                 &audio_path,
             );
 
@@ -149,8 +166,8 @@ async fn handle_chunk(
                     speaker_id:      seg.speaker_id,
                     speaker_label:   seg.speaker_label.clone(),
                     display_name:    speaker.display_name.clone(),
-                    start_ms:        seg.start_ms,
-                    end_ms:          seg.end_ms,
+                    start_ms:        (seg.start * 1000.0) as i64,
+                    end_ms:          (seg.end   * 1000.0) as i64,
                     transcript_text: seg.transcript.clone(),
                 },
                 speaker_event,
@@ -161,7 +178,25 @@ async fn handle_chunk(
         // `db` MutexGuard dropped here — lock released before any await.
     };
 
-    // Fire events after releasing the DB lock.
+    // Emit chunk_processed now that we have response stats and DB work is done.
+    {
+        use std::collections::HashSet;
+        let word_count: u32 = response.segments.iter()
+            .map(|s| s.transcript.split_whitespace().count() as u32)
+            .sum();
+        let speaker_count: u32 = response.segments.iter()
+            .map(|s| s.speaker_id)
+            .collect::<HashSet<_>>()
+            .len() as u32;
+        events::emit_chunk_processed(app, events::ChunkProcessedEvent {
+            start_ms: chunk.start_ms,
+            response_ms,
+            word_count,
+            speaker_count,
+        });
+    }
+
+    // Fire segment/speaker events after releasing the DB lock.
     for (seg_event, speaker_event) in events_to_emit {
         events::emit_segment_added(app, seg_event);
         if let Some(ev) = speaker_event {
@@ -214,9 +249,19 @@ async fn run_pipeline(
     // Stop signal forwarded to the capture thread.
     let (thread_stop_tx, thread_stop_rx) = std::sync::mpsc::channel::<()>();
 
+    // Read the preferred device before spawning — the closure takes ownership.
+    let preferred_device = app_handle
+        .state::<AppState>()
+        .preferred_device
+        .lock()
+        .expect("preferred_device mutex poisoned")
+        .clone();
+
+    let level_app = app_handle.clone();
+
     // Spawn a plain OS thread that owns the `!Send` types (Vad, CPAL stream).
     std::thread::spawn(move || {
-        let capture = match start_capture(None) {
+        let capture = match start_capture(preferred_device.as_deref()) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("CPAL capture start error: {e}");
@@ -228,6 +273,7 @@ async fn run_pipeline(
         let crate::audio::capture::CaptureHandle { rx: mut sample_rx, _stream } = capture;
 
         let mut chunker = Chunker::new();
+        let mut last_level_emit = std::time::Instant::now();
 
         loop {
             // Poll the stop channel — non-blocking.
@@ -236,9 +282,10 @@ async fn run_pipeline(
             }
 
             // Drain all available sample batches without blocking.
-            let mut got_samples = false;
+            // Accumulate into a local vec so RMS reflects the full tick window.
+            let mut tick_samples: Vec<f32> = Vec::new();
             while let Ok(samples) = sample_rx.try_recv() {
-                got_samples = true;
+                tick_samples.extend_from_slice(&samples);
                 if let Some((wav, start, end)) = chunker.push_samples(&samples) {
                     let _ = chunk_tx.blocking_send(AudioChunk {
                         wav_bytes: wav,
@@ -248,9 +295,12 @@ async fn run_pipeline(
                 }
             }
 
-            if !got_samples {
+            if tick_samples.is_empty() {
                 // Avoid busy-spin when the mic buffer is empty.
                 std::thread::sleep(std::time::Duration::from_millis(5));
+            } else if last_level_emit.elapsed() >= std::time::Duration::from_millis(50) {
+                events::emit_audio_level(&level_app, compute_rms(&tick_samples));
+                last_level_emit = std::time::Instant::now();
             }
         }
 
@@ -262,6 +312,9 @@ async fn run_pipeline(
                 end_ms:    end,
             });
         }
+
+        // Reset the meter on the frontend when capture ends.
+        events::emit_audio_level(&level_app, 0.0);
         // chunk_tx dropped here, closing the channel and signalling the async
         // consumer to finish.
     });

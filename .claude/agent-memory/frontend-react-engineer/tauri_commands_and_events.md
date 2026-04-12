@@ -27,6 +27,7 @@ type: project
 | Event | Payload | Notes |
 |---|---|---|
 | `speech_swift_unreachable` | none | Emitted when health check fails. Sets query data for `speech_swift_status` to false. Handled in both `__root.tsx` and `record.tsx` (idempotent). |
+| `speech_swift_reachable` | none | Emitted when health recovers. Sets query data for `speech_swift_status` to true. Handled in `__root.tsx`. |
 | `segment_added` | `Segment` | Live transcript segment. Payload shape: `{id, session_id, speaker_id, speaker_label, display_name, start_ms, end_ms, transcript_text}` |
 | `new_speaker` | `SpeakerNotification` | New speaker detected. Payload: `{id, speech_swift_id, display_name}`. Used to show NewSpeakerBanner. |
 
@@ -37,6 +38,15 @@ type: project
 | `get_sessions` | `(filter: SessionFilter) -> SessionsPage` | Paginated + filtered session list. Arg key is `filter`. `SessionFilter` has snake_case fields: `start_date, end_date, sort_by, sort_dir, page, page_size`. |
 | `get_session` | `(sessionId: i64) -> Session \| null` | Single session by ID. Arg key `sessionId`. Returns null if not found. |
 | `get_segments` | `(sessionId: i64) -> SegmentWithSpeaker[]` | All segments for a session with resolved speaker name. Arg key `sessionId`. |
+
+## Stage 6 — Settings and Device Commands
+
+| Command | Signature | Notes |
+|---|---|---|
+| `get_audio_devices` | `() -> AudioDevice[]` | Returns all audio devices. `AudioDevice` has snake_case fields: `name: string, is_default: boolean`. |
+| `set_audio_device` | `(deviceName: string) -> void` | Arg key is `deviceName` (camelCase). Sets the active input device. |
+| `set_speech_swift_port` | `(port: number) -> void` | Arg key is `port`. Sets the port speech-swift listens on. Takes effect on next launch. |
+| `retry_health_check` | `() -> bool` | Manually triggers a health check. Returns true if reachable. Used in record.tsx to power the SpeechSwiftErrorPanel retry button. |
 
 ## Stage 5 — Semantic Search Commands
 

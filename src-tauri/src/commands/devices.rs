@@ -28,6 +28,13 @@ pub fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
     Ok(devices)
 }
 
+/// Return the currently persisted preferred device name, or `None` if the
+/// user has not set a preference (meaning the system default will be used).
+#[tauri::command]
+pub fn get_preferred_device(state: tauri::State<AppState>) -> Option<String> {
+    state.preferred_device.lock().expect("preferred_device mutex poisoned").clone()
+}
+
 /// Persist the user's preferred audio input device and update live state.
 #[tauri::command]
 pub fn set_audio_device(

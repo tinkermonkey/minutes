@@ -14,6 +14,7 @@ type: project
 | `['sessions', filter]` | Paginated session list. Full filter object as second element — deep equality via TanStack Query. |
 | `['session', sessionId]` | Single session by numeric ID. |
 | `['segments', sessionId]` | All segments for a session. |
+| `['audio_devices']` | List of audio input devices. Invalidated by `set_audio_device` mutation. |
 
 ## Convention
 

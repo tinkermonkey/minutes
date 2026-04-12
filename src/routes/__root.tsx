@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Outlet, Link, useRouterState } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { useTauriEvent } from '../hooks/useTauriEvent';
 import { RouteErrorBoundary } from '../components/RouteErrorBoundary';
 import { SettingsDrawer } from '../components/SettingsDrawer';
 
@@ -18,23 +18,13 @@ export function RootLayout() {
     staleTime: Infinity,
   });
 
-  useEffect(() => {
-    let unlistenUnreachable: (() => void) | undefined;
-    let unlistenReachable: (() => void) | undefined;
+  useTauriEvent<void>('speech_swift_unreachable', () => {
+    queryClient.setQueryData(['speech_swift_status'], false);
+  });
 
-    listen('speech_swift_unreachable', () => {
-      queryClient.setQueryData(['speech_swift_status'], false);
-    }).then(fn => { unlistenUnreachable = fn; });
-
-    listen('speech_swift_reachable', () => {
-      queryClient.setQueryData(['speech_swift_status'], true);
-    }).then(fn => { unlistenReachable = fn; });
-
-    return () => {
-      unlistenUnreachable?.();
-      unlistenReachable?.();
-    };
-  }, [queryClient]);
+  useTauriEvent<void>('speech_swift_reachable', () => {
+    queryClient.setQueryData(['speech_swift_status'], true);
+  });
 
   const navLinks = [
     { to: '/record', label: 'Record' },

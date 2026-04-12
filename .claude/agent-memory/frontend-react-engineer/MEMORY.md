@@ -5,3 +5,4 @@
 - [Query Key Patterns](query_key_patterns.md) — TanStack Query key conventions; 6 keys established across stages; factory extraction pending growth
 - [Routing Structure](routing_structure.md) — Manual TanStack Router tree in src/router.ts; 6 routes + root redirect; named exports throughout
 - [Tailwind + Flowbite Setup](tailwind_setup.md) — Tailwind v4 via @tailwindcss/vite plugin; CSS-first config; no tailwind.config.js needed
+- [Flowbite React Gotchas](flowbite_react_gotchas.md) — v0.12.x: Drawer sub-components are named exports; no Skeleton or isProcessing; use Spinner child for loading buttons

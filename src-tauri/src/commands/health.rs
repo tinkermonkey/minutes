@@ -21,6 +21,14 @@ pub async fn retry_health_check(
     Ok(reachable)
 }
 
+/// Return the currently persisted speech-swift port, or `None` if the default
+/// (8080) is in use.
+#[tauri::command]
+pub fn get_speech_swift_port(state: tauri::State<AppState>) -> Result<Option<String>, String> {
+    let db = state.db.lock().expect("db mutex poisoned");
+    db::settings::get(&db, "speech_swift_port").map_err(|e| e.to_string())
+}
+
 /// Persist a custom speech-swift port to settings so it survives restarts.
 ///
 /// The live `speech_swift_url` on `AppState` is NOT updated here — a restart
