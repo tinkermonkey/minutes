@@ -82,6 +82,9 @@ export function RecordRoute() {
 
   useTauriEvent<Segment>('segment_added', payload => {
     setSegments(prev => {
+      // Drop segments with no recognized text — VAD is imperfect and
+      // speech-swift may return empty transcripts for non-speech audio.
+      if (!payload.transcript_text?.trim()) return prev;
       // Deduplicate: StrictMode double-subscription can fire the handler twice
       // for the same event in the brief window before the first subscription
       // is cleaned up.

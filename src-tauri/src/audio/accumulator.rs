@@ -25,16 +25,9 @@ pub struct SpeechAccumulator {
     chunks: Vec<AppendedChunk>,
 }
 
-/// Records where a single fast-path chunk lands in the accumulator's frame
-/// buffer, so slow-path results can be matched back to DB segment IDs.
+/// Records where a single fast-path chunk lands in the session timeline so
+/// slow-path results can be matched back to DB segment IDs by time overlap.
 pub struct AppendedChunk {
-    /// Index into `frames` where this chunk's samples begin (inclusive).
-    /// Available for future frame-extraction use; slow-path currently matches by time range.
-    #[allow(dead_code)]
-    pub frame_start: usize,
-    /// Exclusive end index into `frames`.
-    #[allow(dead_code)]
-    pub frame_end: usize,
     /// Session-relative start time for this chunk (ms).
     #[allow(dead_code)]
     pub session_start_ms: u64,
@@ -74,19 +67,15 @@ impl SpeechAccumulator {
         chunk_end_ms: u64,
         segment_ids: Vec<i64>,
     ) {
-        let frame_start = self.frames.len();
         if self.clip_start_ms.is_none() {
             self.clip_start_ms = Some(chunk_start_ms);
         }
         self.clip_end_ms = Some(chunk_end_ms);
         self.speech_secs += speech_only.len() as f64 / 16_000.0;
         self.frames.extend(speech_only);
-        let frame_end = self.frames.len();
         self.last_append_at = Some(std::time::Instant::now());
 
         self.chunks.push(AppendedChunk {
-            frame_start,
-            frame_end,
             session_start_ms: chunk_start_ms,
             session_end_ms: chunk_end_ms,
             segment_ids,
@@ -185,19 +174,6 @@ mod tests {
         // clip_start stays at first append
         assert_eq!(acc.clip_start_ms, Some(0));
         assert_eq!(acc.clip_end_ms, Some(20));
-    }
-
-    #[test]
-    fn append_records_chunk_frame_offsets() {
-        let mut acc = SpeechAccumulator::new();
-        acc.append(make_frames(160), 0, 10, vec![1]);
-        acc.append(make_frames(320), 10, 30, vec![2, 3]);
-
-        assert_eq!(acc.chunks.len(), 2);
-        assert_eq!(acc.chunks[0].frame_start, 0);
-        assert_eq!(acc.chunks[0].frame_end, 160);
-        assert_eq!(acc.chunks[1].frame_start, 160);
-        assert_eq!(acc.chunks[1].frame_end, 480);
     }
 
     #[test]
