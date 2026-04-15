@@ -1,15 +1,28 @@
-//! Silero VAD v5 backend using `tract-onnx` (pure-Rust ONNX runtime).
+//! Silero VAD v5 backend using `ort` (OnnxRuntime Rust bindings).
 //!
 //! Silero v5 specifics:
 //! - Frame: 512 samples at 16 kHz (32 ms)
 //! - Inputs:  `input` f32[1,512], `h` f32[2,1,64], `c` f32[2,1,64]  (sr removed in v5)
 //! - Outputs: `output` f32[1,1] (voiced probability), `hn` f32[2,1,64], `cn` f32[2,1,64]
 //! - Voiced if output[0] > 0.5
+//!
+//! Why ort instead of tract-onnx: tract cannot handle the ONNX `If` operator that
+//! Silero v5 uses for sample-rate branching. ort v2 supports the full ONNX spec
+//! and its `Session` is `Send + Sync`.
+//!
+//! ## ort 2.0.0-rc.9 API notes (version locked by fastembed dependency)
+//!
+//! - `Session` is at `ort::session::Session`, not re-exported at the crate root.
+//! - `inputs!` macro returns `Result<...>` — must propagate with `?` or match.
+//! - In the named form, each value goes through `TryInto::<DynValue>` — ndarray
+//!   `Array` and `ArrayView` types implement this conversion directly.
+//! - `try_extract_tensor::<T>()` returns `Result<ArrayViewD<T>>` (no shape tuple).
 
 use std::path::Path;
 use std::sync::Arc;
 
-use tract_onnx::prelude::*;
+use ndarray::{Array2, Array3, ArrayD};
+use ort::session::Session;
 
 use super::vad::VadBackend;
 
@@ -19,43 +32,33 @@ const FRAME_SAMPLES: usize = 512;
 /// Voiced probability threshold.
 const SPEECH_THRESHOLD: f32 = 0.5;
 
-/// Hidden state dimensions: [2, 1, 64].
-const H_SHAPE: [usize; 3] = [2, 1, 64];
-
-type SileroPlan = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
+/// Hidden-state shape [2, 1, 64] as a constant tuple for `Array3::zeros`.
+const H_DIM: (usize, usize, usize) = (2, 1, 64);
 
 pub struct SileroBackend {
-    plan: Arc<SileroPlan>,
+    /// OnnxRuntime session. `Session` is `Send + Sync` via `SharedSessionInner`
+    /// unsafe impls in ort; `Arc` lets us clone the backend cheaply if needed.
+    session: Arc<Session>,
     /// LSTM hidden state h, shape [2, 1, 64].
-    h: Tensor,
+    h: ArrayD<f32>,
     /// LSTM cell state c, shape [2, 1, 64].
-    c: Tensor,
+    c: ArrayD<f32>,
 }
 
 impl SileroBackend {
-    /// Load the Silero ONNX model from `model_path`.
+    /// Load the Silero v5 ONNX model from `model_path`.
     pub fn new(model_path: &Path) -> anyhow::Result<Self> {
-        // Declare concrete input shapes so tract's ToTypedTranslator can
-        // perform static analysis during optimization. Without these hints,
-        // tract fails to infer shapes from the ONNX model's dynamic dims.
-        // Silero v5 has 3 inputs — sr was removed and is now baked in at 16 kHz.
-        let model = tract_onnx::onnx()
-            .model_for_path(model_path)?
-            .with_input_fact(0, f32::fact([1usize, FRAME_SAMPLES]).into())?   // input  f32[1, 512]
-            .with_input_fact(1, f32::fact(H_SHAPE).into())?                   // h      f32[2, 1, 64]
-            .with_input_fact(2, f32::fact(H_SHAPE).into())?                   // c      f32[2, 1, 64]
-            .into_optimized()?
-            .into_runnable()?;
-
+        let session = Session::builder()?.commit_from_file(model_path)?;
         Ok(Self {
-            plan: Arc::new(model),
+            session: Arc::new(session),
             h: Self::zero_state(),
             c: Self::zero_state(),
         })
     }
 
-    fn zero_state() -> Tensor {
-        tract_ndarray::Array3::<f32>::zeros((H_SHAPE[0], H_SHAPE[1], H_SHAPE[2])).into()
+    /// Returns a zeroed LSTM state array of shape [2, 1, 64].
+    fn zero_state() -> ArrayD<f32> {
+        Array3::<f32>::zeros(H_DIM).into_dyn()
     }
 }
 
@@ -67,26 +70,40 @@ impl VadBackend for SileroBackend {
     fn classify_frame(&mut self, frame: &[f32]) -> bool {
         debug_assert_eq!(frame.len(), FRAME_SAMPLES);
 
-        // Build input tensor: shape [1, 512]
+        // Build owned input array [1, 512].
         let input_arr =
-            tract_ndarray::Array2::<f32>::from_shape_vec((1, FRAME_SAMPLES), frame.to_vec());
-        let input_arr = match input_arr {
-            Ok(a) => a,
+            match Array2::<f32>::from_shape_vec((1, FRAME_SAMPLES), frame.to_vec()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("silero: bad frame shape: {e}");
+                    return false;
+                }
+            };
+
+        // Build the session inputs.
+        //
+        // In ort 2.0.0-rc.9 the named inputs! macro returns Result<Vec<...>>,
+        // where each value is converted via TryInto::<DynValue>.
+        //
+        // - `input_arr`   : Array2<f32>          — IntoValueTensor impl (owned, may copy if non-contiguous)
+        // - `self.h.view()`: ArrayViewD<f32>      — TryFrom<ArrayView> for DynValue impl (always copies)
+        // - `self.c.view()`: ArrayViewD<f32>      — same
+        //
+        // Both arrays were created from Array3::zeros or assigned from to_owned()
+        // so they are guaranteed contiguous; the copy is cheap (2*1*64 = 128 f32).
+        let run_inputs = match ort::inputs![
+            "input" => input_arr,
+            "h"     => self.h.view(),
+            "c"     => self.c.view(),
+        ] {
+            Ok(i) => i,
             Err(e) => {
-                eprintln!("silero: failed to build input tensor: {e}");
+                eprintln!("silero: failed to build inputs: {e}");
                 return false;
             }
         };
-        let input: Tensor = input_arr.into();
 
-        // Silero v5: sr is baked in at 16 kHz — no sr input tensor.
-        let inputs = tvec![
-            input.into(),
-            self.h.clone().into(),
-            self.c.clone().into(),
-        ];
-
-        let mut outputs = match self.plan.run(inputs) {
+        let outputs = match self.session.run(run_inputs) {
             Ok(o) => o,
             Err(e) => {
                 eprintln!("silero: inference error: {e}");
@@ -94,21 +111,28 @@ impl VadBackend for SileroBackend {
             }
         };
 
-        // outputs[0] = voiced probability [1, 1]
-        // outputs[1] = hn [2, 1, 64]
-        // outputs[2] = cn [2, 1, 64]
-        let prob = outputs[0]
-            .as_slice::<f32>()
+        // Extract voiced probability.
+        // try_extract_tensor in rc.9 returns Result<ArrayViewD<T>>.
+        let prob = outputs["output"]
+            .try_extract_tensor::<f32>()
             .ok()
-            .and_then(|s| s.first())
-            .copied()
+            .as_ref()
+            .and_then(|view| view.iter().next().copied())
             .unwrap_or(0.0);
 
-        // Update hidden state — consume by removing (high index first to keep indices stable).
-        let cn = outputs.remove(2).into_tensor();
-        let hn = outputs.remove(1).into_tensor();
-        self.h = hn;
-        self.c = cn;
+        // Update LSTM hidden states.  Errors here are non-fatal — stale state
+        // degrades VAD accuracy for the current utterance but does not crash
+        // the pipeline.
+        if let Ok(hn_view) = outputs["hn"].try_extract_tensor::<f32>() {
+            self.h = hn_view.to_owned();
+        } else {
+            eprintln!("silero: failed to extract hn state");
+        }
+        if let Ok(cn_view) = outputs["cn"].try_extract_tensor::<f32>() {
+            self.c = cn_view.to_owned();
+        } else {
+            eprintln!("silero: failed to extract cn state");
+        }
 
         prob > SPEECH_THRESHOLD
     }
@@ -119,11 +143,10 @@ impl VadBackend for SileroBackend {
     }
 }
 
-// SileroBackend is Send + Sync because tract's SimplePlan (wrapped in Arc) is
-// Send + Sync and the Tensor type is also Send.  No raw pointers involved.
-// SAFETY: Verify at compile time — if tract's types are not Send this will
-// fail to compile.
-fn _assert_send_sync()
+// Verify at compile time that SileroBackend is Send.
+// `Session` is Send + Sync (via unsafe impls on SharedSessionInner in ort).
+// `Arc<Session>` is Send. `ArrayD<f32>` is Send.
+fn _assert_send()
 where
     SileroBackend: Send,
 {
@@ -133,19 +156,32 @@ where
 mod tests {
     use super::*;
 
-    /// Verify the zero-state tensor has the right shape.
+    /// Verify the zero-state array has the correct shape.
     #[test]
     fn zero_state_shape() {
-        let t = SileroBackend::zero_state();
-        assert_eq!(t.shape(), &[2usize, 1, 64]);
+        let s = SileroBackend::zero_state();
+        assert_eq!(s.shape(), &[2usize, 1, 64]);
     }
 
-    /// Verify frame_size is 512.
+    /// Verify the frame size constant is 512.
     #[test]
-    fn silero_frame_size() {
-        // We cannot load the real model in unit tests (no resource dir),
-        // so we test via a helper that constructs the backend without a plan.
-        // Instead, assert the constant directly.
+    fn frame_size_constant() {
         assert_eq!(FRAME_SAMPLES, 512);
+    }
+
+    /// Verify zero_state produces all-zero values.
+    #[test]
+    fn zero_state_values() {
+        let s = SileroBackend::zero_state();
+        assert!(s.iter().all(|&v| v == 0.0_f32));
+    }
+
+    /// Verify that two successive zero states are identical.
+    #[test]
+    fn zero_state_is_idempotent() {
+        let a = SileroBackend::zero_state();
+        let b = SileroBackend::zero_state();
+        assert_eq!(a.shape(), b.shape());
+        assert!(a.iter().zip(b.iter()).all(|(x, y)| x == y));
     }
 }

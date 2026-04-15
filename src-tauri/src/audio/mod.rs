@@ -46,7 +46,7 @@ impl DynChunker {
         match mode {
             VadMode::Silero => match SileroBackend::new(model_path) {
                 Ok(backend) => {
-                    eprintln!("VAD: using Silero (tract-onnx)");
+                    eprintln!("VAD: using Silero (ort/OnnxRuntime)");
                     DynChunker::Silero(Chunker::new(backend))
                 }
                 Err(e) => {
