@@ -9,6 +9,7 @@ const CHIP_COLORS = [
   'bg-teal-100 text-teal-800',
 ];
 
-export function speakerColor(speakerId: number): string {
+export function speakerColor(speakerId: number | null): string {
+  if (speakerId === null) return 'bg-gray-100 text-gray-500';
   return CHIP_COLORS[speakerId % CHIP_COLORS.length];
 }

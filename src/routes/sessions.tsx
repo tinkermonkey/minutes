@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { useSessions } from '../hooks/useSessions';
+import { useSessions, useDeleteAllSessions } from '../hooks/useSessions';
 import { ParticipantChips } from '../components/sessions/ParticipantChips';
 import { SourceBadge } from '../components/sessions/SourceBadge';
 import { SortableHeader } from '../components/sessions/SortableHeader';
 import { SessionDateFilter } from '../components/sessions/SessionDateFilter';
 import { SessionTableSkeleton } from '../components/sessions/SessionTableSkeleton';
+import { DeleteAllSessionsModal } from '../components/sessions/DeleteAllSessionsModal';
 import { QueryError } from '../components/QueryError';
 import { formatDate, formatTime, formatDuration } from '../lib/format';
 import type { SessionFilter, SortBy } from '../types/session';
@@ -20,8 +21,11 @@ export function SessionsRoute() {
     page:       1,
     page_size:  20,
   });
+  const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
+  const [deleteAllError, setDeleteAllError] = useState<string | null>(null);
 
   const { data, isLoading, isFetching, isError, error, refetch } = useSessions(filter);
+  const deleteAllSessions = useDeleteAllSessions();
   const sessions = data?.sessions ?? [];
   const totalCount = data?.total_count ?? 0;
   const totalPages = Math.ceil(totalCount / filter.page_size);
@@ -46,11 +50,21 @@ export function SessionsRoute() {
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-semibold text-gray-900">Session History</h1>
-        <SessionDateFilter
-          startDate={filter.start_date}
-          endDate={filter.end_date}
-          onChange={(start, end) => updateFilter({ start_date: start, end_date: end })}
-        />
+        <div className="flex items-center gap-3">
+          <SessionDateFilter
+            startDate={filter.start_date}
+            endDate={filter.end_date}
+            onChange={(start, end) => updateFilter({ start_date: start, end_date: end })}
+          />
+          {totalCount > 0 && (
+            <button
+              onClick={() => { setDeleteAllError(null); setShowDeleteAllModal(true); }}
+              className="px-3 py-1.5 text-xs font-medium text-red-600 border border-red-200 hover:bg-red-50 rounded-lg transition-colors"
+            >
+              Delete All
+            </button>
+          )}
+        </div>
       </div>
 
       {isLoading ? (
@@ -124,6 +138,23 @@ export function SessionsRoute() {
             </div>
           )}
         </div>
+      )}
+
+      {showDeleteAllModal && (
+        <DeleteAllSessionsModal
+          isPending={deleteAllSessions.isPending}
+          error={deleteAllError}
+          onConfirm={async () => {
+            setDeleteAllError(null);
+            try {
+              await deleteAllSessions.mutateAsync();
+              setShowDeleteAllModal(false);
+            } catch (e) {
+              setDeleteAllError(e instanceof Error ? e.message : String(e));
+            }
+          }}
+          onCancel={() => { setDeleteAllError(null); setShowDeleteAllModal(false); }}
+        />
       )}
     </div>
   );

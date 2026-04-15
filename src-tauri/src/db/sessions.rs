@@ -120,6 +120,20 @@ pub fn list_sessions(
     Ok(SessionsPage { sessions, total_count })
 }
 
+/// Delete all sessions and their associated data from the database.
+///
+/// Deletes in dependency order: speaker_samples → segments → sessions.
+/// Speaker identities in the `speakers` table are intentionally left intact —
+/// the user can reset those separately via reset_speaker_registry.
+pub fn delete_all(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "DELETE FROM speaker_samples;
+         DELETE FROM segments;
+         DELETE FROM sessions;",
+    )?;
+    Ok(())
+}
+
 pub fn get_session_by_id(
     conn: &Connection,
     session_id: i64,

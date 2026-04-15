@@ -25,6 +25,7 @@ export interface SegmentWithSpeaker {
   end_ms:          number;
   transcript_text: string;
   display_name:    string | null;
+  status:          'pending' | 'confirmed';
 }
 
 export type SortBy  = 'date' | 'duration';

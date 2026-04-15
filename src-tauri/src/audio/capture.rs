@@ -20,6 +20,7 @@ pub struct CaptureHandle {
 pub fn start_capture(preferred: Option<&str>) -> anyhow::Result<CaptureHandle> {
     let host = cpal::default_host();
 
+    #[allow(deprecated)]
     let device = if let Some(name) = preferred {
         host.input_devices()?
             .find(|d| d.name().ok().as_deref() == Some(name))
@@ -81,8 +82,8 @@ pub fn start_capture(preferred: Option<&str>) -> anyhow::Result<CaptureHandle> {
 }
 
 /// Linear interpolation resample — good enough for the 44.1 kHz → 16 kHz
-/// conversion that most macOS devices need. A higher-quality filter is not
-/// required here because webrtc-vad already does its own internal downsampling.
+/// conversion that most macOS devices need. Silero VAD operates on 16 kHz
+/// input and does not perform its own downsampling.
 fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate || samples.is_empty() {
         return samples.to_vec();

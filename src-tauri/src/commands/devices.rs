@@ -9,6 +9,7 @@ pub struct AudioDevice {
 
 /// List all available audio input devices, flagging the system default.
 #[tauri::command]
+#[allow(deprecated)]
 pub fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
     let host = cpal::default_host();
     let default_name = host.default_input_device()

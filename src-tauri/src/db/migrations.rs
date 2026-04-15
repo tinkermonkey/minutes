@@ -77,6 +77,19 @@ pub fn migrations() -> Migrations<'static> {
                 );
             "#,
         ),
+        M::up(
+            r#"
+                -- Dual-stream accumulation: track each VAD chunk's position and
+                -- resolution status so slow-path results can be matched back.
+                ALTER TABLE segments ADD COLUMN status TEXT NOT NULL DEFAULT 'pending';
+                ALTER TABLE segments ADD COLUMN chunk_start REAL;
+                ALTER TABLE segments ADD COLUMN chunk_end   REAL;
+
+                -- Backfill: existing segments that already have a speaker_id are
+                -- already confirmed; only new pending segments need resolution.
+                UPDATE segments SET status = 'confirmed' WHERE speaker_id IS NOT NULL;
+            "#,
+        ),
     ])
 }
 
@@ -92,7 +105,7 @@ mod tests {
             .to_latest(&mut conn)
             .expect("migrations should succeed");
 
-        // Verify all four tables exist.
+        // Verify all tables exist.
         let tables: Vec<String> = {
             let mut stmt = conn
                 .prepare(
@@ -109,5 +122,26 @@ mod tests {
         assert!(tables.contains(&"speaker_samples".to_string()));
         assert!(tables.contains(&"speakers".to_string()));
         assert!(tables.contains(&"settings".to_string()));
+
+        // Verify migration #4 added status, chunk_start, chunk_end columns.
+        conn.execute(
+            "INSERT INTO sessions (created_at, source) VALUES (1, 'mic')",
+            [],
+        )
+        .expect("insert session");
+        conn.execute(
+            "INSERT INTO segments (session_id, start_ms, end_ms, transcript_text, status)
+             VALUES (1, 0, 1000, 'test', 'pending')",
+            [],
+        )
+        .expect("insert segment with status");
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM segments WHERE session_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query status");
+        assert_eq!(status, "pending");
     }
 }

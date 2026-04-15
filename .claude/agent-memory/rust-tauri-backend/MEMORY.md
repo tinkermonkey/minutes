@@ -11,3 +11,4 @@
 - [rusqlite query_map lifetime](rusqlite-query-map-lifetime.md) — collect into a let binding before stmt goes out of scope; tail-expression chain hits E0597
 - [sqlite-vec KNN query syntax](sqlite-vec-knn-syntax.md) — MATCH + ORDER BY distance + LIMIT required; query vector is LE f32 bytes; CTE join pattern for post-filter
 - [axum 0.8 patterns](axum-08-patterns.md) — {param} not :param syntax; tower::ServiceExt::oneshot for tests; per-request open_readonly connections for ApiState
+- [Dual VAD pipeline](dual-vad-pipeline.md) — VadBackend trait, SileroBackend (tract-onnx), WebRtcBackend fallback, DynChunker enum, dynamic silence threshold scaling

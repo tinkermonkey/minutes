@@ -6,9 +6,10 @@ interface Props {
   onConfirm: () => void;
   onCancel:  () => void;
   isPending: boolean;
+  error?:    string | null;
 }
 
-export function MergeConfirmModal({ src, dst, onConfirm, onCancel, isPending }: Props) {
+export function MergeConfirmModal({ src, dst, onConfirm, onCancel, isPending, error }: Props) {
   const srcName = src.display_name ?? `Speaker ${src.speech_swift_id}`;
   const dstName = dst.display_name ?? `Speaker ${dst.speech_swift_id}`;
 
@@ -23,6 +24,11 @@ export function MergeConfirmModal({ src, dst, onConfirm, onCancel, isPending }: 
           All transcript segments attributed to {srcName} will be re-attributed to {dstName}.
           This cannot be undone.
         </p>
+        {error && (
+          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-4">
+            {error}
+          </p>
+        )}
         <div className="flex justify-end gap-3">
           <button
             onClick={onCancel}

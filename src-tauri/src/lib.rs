@@ -145,11 +145,13 @@ pub fn run() {
             commands::speakers::rename_speaker,
             commands::speakers::merge_speakers,
             commands::speakers::delete_speaker,
+            commands::speakers::reset_speaker_registry,
             commands::speakers::get_speaker_sample_path,
             commands::speakers::read_audio_bytes,
             commands::sessions::get_sessions,
             commands::sessions::get_session,
             commands::sessions::get_segments,
+            commands::sessions::delete_all_sessions,
             commands::search::search_segments,
         ])
         .run(tauri::generate_context!())

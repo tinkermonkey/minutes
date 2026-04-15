@@ -12,20 +12,21 @@ function formatMs(ms: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function SpeakerChip({ speakerId, displayName, speakerLabel }: {
-  speakerId:   number;
-  displayName: string | null;
-  speakerLabel: string;
+function SpeakerChip({ speakerId, displayName, speakerLabel, status }: {
+  speakerId:    number | null;
+  displayName:  string | null;
+  speakerLabel: string | null;
+  status:       'pending' | 'confirmed';
 }) {
-  if (!speakerId) {
+  if (status === 'pending') {
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500 whitespace-nowrap">
-        Unknown
+      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500 whitespace-nowrap italic">
+        Identifying...
       </span>
     );
   }
   const colorClasses = speakerColor(speakerId);
-  const label = displayName ?? speakerLabel;
+  const label = displayName ?? speakerLabel ?? 'Unknown';
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${colorClasses}`}>
       {label}
@@ -40,6 +41,7 @@ export function SegmentCard({ segment }: Props) {
         speakerId={segment.speaker_id}
         displayName={segment.display_name}
         speakerLabel={segment.speaker_label}
+        status={segment.status}
       />
       <span className="font-mono text-xs text-gray-400 whitespace-nowrap w-14 pt-0.5">
         {formatMs(segment.start_ms)}

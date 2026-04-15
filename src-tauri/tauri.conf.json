@@ -35,6 +35,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": ["resources/silero_vad.onnx"],
     "macOS": {
       "entitlements": "entitlements.plist",
       "infoPlist": "Info.plist"

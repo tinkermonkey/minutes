@@ -1,13 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useQueryClient, useMutation } from '@tanstack/react-query';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useSpeechSwiftStatus } from '../hooks/useSpeechSwiftStatus';
 import { useStartSession, useStopSession } from '../hooks/useSession';
 import { useTauriEvent } from '../hooks/useTauriEvent';
+import { useVadState } from '../hooks/useVadState';
 import { RecordButton } from '../components/RecordButton';
 import { SessionStatusBadge } from '../components/SessionStatusBadge';
 import { AudioMeter } from '../components/AudioMeter';
+import { AudioLevelGraph } from '../components/AudioLevelGraph';
 import { PipelineEventLog } from '../components/PipelineEventLog';
 import { TranscriptPanel } from '../components/TranscriptPanel';
 import { NewSpeakerBanner } from '../components/NewSpeakerBanner';
@@ -15,9 +17,13 @@ import { SpeechSwiftErrorPanel } from '../components/SpeechSwiftErrorPanel';
 import type {
   Segment,
   SpeakerNotification,
+  SpeakerResolvedEvent,
   ChunkSentEvent,
   ChunkProcessedEvent,
   PipelineEntry,
+  AccumulatorUpdatedEvent,
+  SlowPathSentEvent,
+  SlowPathDoneEvent,
 } from '../types/transcript';
 
 type SessionState =
@@ -36,6 +42,15 @@ export function RecordRoute() {
   const [showNewSpeakerBanner, setShowNewSpeakerBanner] = useState(false);
   const [elapsed, setElapsed]           = useState(0);
   const [pipelineEntries, setPipelineEntries] = useState<PipelineEntry[]>([]);
+  const [accumulatorSecs,    setAccumulatorSecs]    = useState(0);
+  const [accumulatorTrigger, setAccumulatorTrigger] = useState(30);
+
+  const isRecording = sessionState.status === 'recording';
+  const vadActive   = useVadState(isRecording);
+
+  // Buffer for speaker_resolved events that arrive before segment_added has
+  // applied the segment to state. Keyed by segment id.
+  const pendingResolutions = useRef<Map<number, SpeakerResolvedEvent>>(new Map());
 
   const retryHealth = useMutation({
     mutationFn: (): Promise<boolean> => invoke('retry_health_check'),
@@ -66,7 +81,49 @@ export function RecordRoute() {
   }, [sessionState]);
 
   useTauriEvent<Segment>('segment_added', payload => {
-    setSegments(prev => [...prev, payload]);
+    setSegments(prev => {
+      // Deduplicate: StrictMode double-subscription can fire the handler twice
+      // for the same event in the brief window before the first subscription
+      // is cleaned up.
+      if (prev.some(s => s.id === payload.id)) return prev;
+
+      const pending = pendingResolutions.current.get(payload.id);
+      if (pending) {
+        pendingResolutions.current.delete(payload.id);
+        return [...prev, {
+          ...payload,
+          speaker_id:    pending.speaker_id,
+          speaker_label: pending.speaker_label,
+          display_name:  pending.display_name,
+          status:        'confirmed' as const,
+        }];
+      }
+      return [...prev, payload];
+    });
+  });
+
+  useTauriEvent<SpeakerResolvedEvent>('speaker_resolved', payload => {
+    setSegments(prev => {
+      const seg = prev.find(s => s.id === payload.segment_id);
+      if (!seg) {
+        // Segment not yet applied to state — buffer the resolution.
+        pendingResolutions.current.set(payload.segment_id, payload);
+        return prev;
+      }
+      // Skip if already confirmed with a speaker (idempotent for double-fire).
+      if (seg.status === 'confirmed' && seg.speaker_id === payload.speaker_id) {
+        return prev;
+      }
+      return prev.map(s =>
+        s.id === payload.segment_id
+          ? { ...s,
+              speaker_id:    payload.speaker_id,
+              speaker_label: payload.speaker_label,
+              display_name:  payload.display_name,
+              status:        'confirmed' as const }
+          : s
+      );
+    });
   });
 
   useTauriEvent<SpeakerNotification>('new_speaker', () => {
@@ -79,6 +136,7 @@ export function RecordRoute() {
 
   useTauriEvent<ChunkSentEvent>('chunk_sent', payload => {
     setPipelineEntries(prev => [...prev, {
+      kind:       'fast' as const,
       start_ms:   payload.start_ms,
       end_ms:     payload.end_ms,
       sent_at_ms: payload.sent_at_ms,
@@ -87,11 +145,34 @@ export function RecordRoute() {
 
   useTauriEvent<ChunkProcessedEvent>('chunk_processed', payload => {
     setPipelineEntries(prev => prev.map(entry =>
-      entry.start_ms === payload.start_ms
+      entry.kind === 'fast' && entry.start_ms === payload.start_ms
         ? { ...entry,
             response_ms:   payload.response_ms,
             word_count:    payload.word_count,
             speaker_count: payload.speaker_count }
+        : entry
+    ));
+  });
+
+  useTauriEvent<AccumulatorUpdatedEvent>('accumulator_updated', payload => {
+    setAccumulatorSecs(payload.speech_secs);
+    setAccumulatorTrigger(payload.trigger_secs);
+  });
+
+  useTauriEvent<SlowPathSentEvent>('slow_path_sent', payload => {
+    setPipelineEntries(prev => [...prev, {
+      kind:             'slow' as const,
+      start_ms:         payload.start_ms,
+      end_ms:           payload.end_ms,
+      clip_speech_secs: payload.clip_speech_secs,
+      sent_at_ms:       payload.sent_at_ms,
+    }]);
+  });
+
+  useTauriEvent<SlowPathDoneEvent>('slow_path_done', payload => {
+    setPipelineEntries(prev => prev.map(entry =>
+      entry.kind === 'slow' && entry.start_ms === payload.start_ms
+        ? { ...entry, response_ms: payload.response_ms, segment_count: payload.segment_count }
         : entry
     ));
   });
@@ -103,6 +184,9 @@ export function RecordRoute() {
     setShowNewSpeakerBanner(false);
     setElapsed(0);
     setPipelineEntries([]);
+    setAccumulatorSecs(0);
+    setAccumulatorTrigger(30);
+    pendingResolutions.current.clear();
   }
 
   async function handleStop() {
@@ -111,6 +195,7 @@ export function RecordRoute() {
     setSessionState({ status: 'stopping', sessionId });
     await stopSession.mutateAsync(sessionId);
     setSessionState({ status: 'idle' });
+    queryClient.invalidateQueries({ queryKey: ['segments', sessionId] });
   }
 
   if (speechSwiftOk === false) {
@@ -133,12 +218,17 @@ export function RecordRoute() {
           onStop={handleStop}
         />
         <SessionStatusBadge status={sessionState.status} elapsedMs={elapsed} />
-        <AudioMeter active={sessionState.status === 'recording'} />
+        <AudioMeter active={isRecording} vadActive={vadActive} />
       </div>
 
       {/* New speaker banner */}
       {showNewSpeakerBanner && (
         <NewSpeakerBanner onDismiss={() => setShowNewSpeakerBanner(false)} />
+      )}
+
+      {/* Audio level graph — shown during and immediately after a recording */}
+      {sessionState.status !== 'idle' && (
+        <AudioLevelGraph active={isRecording} vadActive={vadActive} />
       )}
 
       {/* Pipeline event log — only shown during or after a recording */}
@@ -147,14 +237,18 @@ export function RecordRoute() {
           <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wide px-1">
             Pipeline
           </h2>
-          <PipelineEventLog entries={pipelineEntries} />
+          <PipelineEventLog
+            entries={pipelineEntries}
+            accumulatorSecs={accumulatorSecs}
+            accumulatorTrigger={accumulatorTrigger}
+          />
         </div>
       )}
 
       {/* Transcript panel */}
       <TranscriptPanel
         segments={segments}
-        isRecording={sessionState.status === 'recording'}
+        isRecording={isRecording}
       />
     </div>
   );

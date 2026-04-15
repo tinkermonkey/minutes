@@ -26,6 +26,7 @@ export function useMergeSpeakers() {
     mutationFn: ({ srcId, dstId }: { srcId: number; dstId: number }) =>
       invoke('merge_speakers', { srcId, dstId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: SPEAKERS_KEY }),
+    onError: (e) => console.error('[merge_speakers]', e),
   });
 }
 
@@ -34,6 +35,14 @@ export function useDeleteSpeaker() {
   return useMutation({
     mutationFn: (speechSwiftId: number) =>
       invoke('delete_speaker', { speechSwiftId }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: SPEAKERS_KEY }),
+  });
+}
+
+export function useResetRegistry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (): Promise<void> => invoke('reset_speaker_registry'),
     onSuccess: () => qc.invalidateQueries({ queryKey: SPEAKERS_KEY }),
   });
 }

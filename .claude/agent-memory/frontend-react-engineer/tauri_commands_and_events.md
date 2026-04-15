@@ -38,6 +38,7 @@ type: project
 | `get_sessions` | `(filter: SessionFilter) -> SessionsPage` | Paginated + filtered session list. Arg key is `filter`. `SessionFilter` has snake_case fields: `start_date, end_date, sort_by, sort_dir, page, page_size`. |
 | `get_session` | `(sessionId: i64) -> Session \| null` | Single session by ID. Arg key `sessionId`. Returns null if not found. |
 | `get_segments` | `(sessionId: i64) -> SegmentWithSpeaker[]` | All segments for a session with resolved speaker name. Arg key `sessionId`. |
+| `delete_all_sessions` | `() -> void` | Deletes all sessions and their transcript segments. No args. Invalidates `['sessions']` query key. |
 
 ## Stage 6 — Settings and Device Commands
 

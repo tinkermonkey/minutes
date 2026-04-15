@@ -1,4 +1,5 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useCallback } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { SegmentCard } from './SegmentCard';
 import type { Segment } from '../types/transcript';
 
@@ -8,22 +9,34 @@ interface Props {
 }
 
 export function TranscriptPanel({ segments, isRecording }: Props) {
-  const containerRef  = useRef<HTMLDivElement>(null);
-  const bottomRef     = useRef<HTMLDivElement>(null);
-  const isAtBottomRef = useRef(true);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isAtTopRef   = useRef(true);
 
-  const handleScroll = () => {
+  // Display newest first.
+  const reversed = [...segments].reverse();
+
+  const virtualizer = useVirtualizer({
+    count:            reversed.length,
+    getScrollElement: () => containerRef.current,
+    estimateSize:     () => 80,
+    overscan:         5,
+    measureElement:   (el) => el.getBoundingClientRect().height,
+  });
+
+  const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
-    isAtBottomRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < 64;
-  };
+    isAtTopRef.current = el.scrollTop < 64;
+  }, []);
 
+  // Auto-scroll: when a new segment arrives, scroll to the top (index 0 =
+  // most recent) only if the user was already there.
   useEffect(() => {
-    if (isAtBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (reversed.length === 0) return;
+    if (isAtTopRef.current) {
+      virtualizer.scrollToIndex(0, { behavior: 'smooth' });
     }
-  }, [segments.length]);
+  }, [reversed.length, virtualizer]);
 
   if (segments.length === 0) {
     if (isRecording) {
@@ -36,16 +49,33 @@ export function TranscriptPanel({ segments, isRecording }: Props) {
     return null;
   }
 
+  const totalSize    = virtualizer.getTotalSize();
+  const virtualItems = virtualizer.getVirtualItems();
+
   return (
     <div
       ref={containerRef}
       onScroll={handleScroll}
       className="overflow-y-auto flex-1"
     >
-      {segments.map(segment => (
-        <SegmentCard key={segment.id} segment={segment} />
-      ))}
-      <div ref={bottomRef} />
+      <div style={{ height: totalSize, position: 'relative' }}>
+        {virtualItems.map((vItem) => (
+          <div
+            key={vItem.key}
+            ref={virtualizer.measureElement}
+            data-index={vItem.index}
+            style={{
+              position:  'absolute',
+              top:       0,
+              left:      0,
+              right:     0,
+              transform: `translateY(${vItem.start}px)`,
+            }}
+          >
+            <SegmentCard segment={reversed[vItem.index]} />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

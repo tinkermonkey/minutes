@@ -144,6 +144,21 @@ pub fn delete_speaker_local(conn: &Connection, speech_swift_id: i64) -> anyhow::
     Ok(())
 }
 
+/// Remove all speaker data from the local database.
+///
+/// Called after `DELETE /registry/speakers` to keep local state in sync.
+/// - Deletes all rows from `speakers` and `speaker_samples`.
+/// - Sets `speaker_id = NULL` and `status = 'pending'` on all segments
+///   so the transcript view shows them as unresolved.
+pub fn reset_all(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "DELETE FROM speaker_samples;
+         DELETE FROM speakers;
+         UPDATE segments SET speaker_id = NULL, status = 'pending';",
+    )?;
+    Ok(())
+}
+
 /// Return the audio path of the most-recent sample for this speaker, if any.
 pub fn get_sample_path(conn: &Connection, speech_swift_id: i64) -> anyhow::Result<Option<String>> {
     conn.query_row(

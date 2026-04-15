@@ -3,6 +3,8 @@ import { useTauriEvent } from '../hooks/useTauriEvent';
 
 interface Props {
   active: boolean;
+  /** When true, the VAD indicator segment lights up deep blue. */
+  vadActive?: boolean;
 }
 
 // Number of discrete segments in the meter bar.
@@ -12,7 +14,7 @@ const SEGMENTS = 20;
 const YELLOW_THRESHOLD = 13;
 const RED_THRESHOLD    = 17;
 
-export function AudioMeter({ active }: Props) {
+export function AudioMeter({ active, vadActive = false }: Props) {
   const [level, setLevel] = useState(0);
 
   useEffect(() => {
@@ -54,6 +56,14 @@ export function AudioMeter({ active }: Props) {
           );
         })}
       </div>
+      {/* VAD indicator — one segment, same geometry as a meter segment */}
+      <div
+        className={`w-2 h-3 rounded-sm transition-colors duration-75 ${
+          vadActive ? 'bg-blue-600' : 'bg-blue-200'
+        }`}
+        aria-label={vadActive ? 'Voice detected' : 'No voice detected'}
+        title={vadActive ? 'VAD: active' : 'VAD: silent'}
+      />
     </div>
   );
 }

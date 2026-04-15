@@ -4,15 +4,15 @@
 /// `(start * 1000.0) as i64` at the call site.
 #[derive(Debug, serde::Deserialize)]
 pub struct SegmentResponse {
-    pub speaker_id:    i64,
-    pub speaker_label: String,
+    pub speaker_id:    Option<i64>,
+    pub speaker_label: Option<String>,
     /// Segment start time in seconds from the beginning of the submitted audio.
     pub start:         f64,
     /// Segment end time in seconds.
     pub end:           f64,
     #[allow(dead_code)]
     pub duration:      f64,
-    pub transcript:    String,
+    pub transcript:    Option<String>,
 }
 
 /// Top-level response from `POST /registry/sessions`.
@@ -37,16 +37,19 @@ pub async fn transcribe_chunk(
         .mime_str("audio/wav")?;
     let form = reqwest::multipart::Form::new().part("file", part);
 
-    let resp = client
+    let body = client
         .post(format!("{}/registry/sessions", base_url))
         .multipart(form)
         .send()
         .await?
         .error_for_status()?
-        .json::<SessionResponse>()
+        .text()
         .await?;
 
-    Ok(resp)
+    serde_json::from_str::<SessionResponse>(&body).map_err(|e| {
+        let preview: String = body.chars().take(1000).collect();
+        anyhow::anyhow!("transcribe parse error: {e}\nbody: {preview}")
+    })
 }
 
 /// A speaker record returned by `GET /registry/speakers`.
@@ -59,12 +62,21 @@ pub struct SpeakerRecord {
 
 /// Fetch the full speaker registry from the audio-server.
 pub async fn list_speakers(base_url: &str) -> anyhow::Result<Vec<SpeakerRecord>> {
-    let resp = reqwest::get(format!("{}/registry/speakers", base_url))
+    let body = reqwest::get(format!("{}/registry/speakers", base_url))
         .await?
         .error_for_status()?
-        .json::<Vec<SpeakerRecord>>()
+        .text()
         .await?;
-    Ok(resp)
+
+    #[derive(serde::Deserialize)]
+    struct Wrapper { speakers: Vec<SpeakerRecord> }
+
+    serde_json::from_str::<Wrapper>(&body)
+        .map(|w| w.speakers)
+        .map_err(|e| {
+            let preview: String = body.chars().take(1000).collect();
+            anyhow::anyhow!("list_speakers parse error: {e}\nbody: {preview}")
+        })
 }
 
 /// Set the display name for a speaker in the audio-server registry.
@@ -98,6 +110,19 @@ pub async fn delete_speaker(base_url: &str, speech_swift_id: i64) -> anyhow::Res
     let client = reqwest::Client::new();
     client
         .delete(format!("{}/registry/speakers/{}", base_url, speech_swift_id))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
+/// Wipe all speakers and centroids from the audio-server registry.
+///
+/// Calls `DELETE /registry/speakers` which resets the registry to empty.
+pub async fn reset_registry(base_url: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    client
+        .delete(format!("{}/registry/speakers", base_url))
         .send()
         .await?
         .error_for_status()?;

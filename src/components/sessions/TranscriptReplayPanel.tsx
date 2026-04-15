@@ -9,6 +9,7 @@ interface Props {
 }
 
 function resolveLabel(seg: SegmentWithSpeaker): string {
+  if (seg.status === 'pending') return 'Identifying...';
   if (seg.display_name) return seg.display_name;
   if (seg.speaker_id !== null) return `Speaker ${seg.speaker_id}`;
   return 'Unknown';
@@ -40,10 +41,11 @@ export function TranscriptReplayPanel({ segments }: Props) {
         {virtualizer.getVirtualItems().map(virtualItem => {
           const seg = segments[virtualItem.index];
           const label = resolveLabel(seg);
-          const colorClass = seg.speaker_id !== null
+          const isPending = seg.status === 'pending';
+          const colorClass = seg.speaker_id !== null && !isPending
             ? speakerColor(seg.speaker_id)
-            : 'bg-gray-100 text-gray-600';
-          const isUnknown = seg.speaker_id === null;
+            : 'bg-gray-100 text-gray-500';
+          const isUnknown = seg.speaker_id === null && !isPending;
 
           return (
             <div
@@ -53,7 +55,7 @@ export function TranscriptReplayPanel({ segments }: Props) {
               style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualItem.start}px)` }}
             >
               <div className="bg-white border border-gray-200 rounded-lg p-3 mb-2 flex items-start gap-3">
-                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap flex-shrink-0 ${colorClass} ${isUnknown ? 'italic' : ''}`}>
+                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap flex-shrink-0 ${colorClass} ${isUnknown || isPending ? 'italic' : ''}`}>
                   {label}
                 </span>
                 <span className="text-xs text-gray-400 font-mono whitespace-nowrap w-14 flex-shrink-0 pt-0.5">

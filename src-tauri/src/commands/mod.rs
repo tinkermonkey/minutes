@@ -8,7 +8,7 @@ use tauri::Manager;
 use tokio::sync::oneshot;
 
 use crate::{
-    audio::{capture::start_capture, chunker::Chunker},
+    audio::{capture::start_capture, DynChunker, VadMode},
     client::speech_swift,
     db::{self, segments::NewSegment},
     embed,
@@ -257,6 +257,14 @@ async fn run_pipeline(
         .expect("preferred_device mutex poisoned")
         .clone();
 
+    // Resolve the Silero model path from the Tauri resource directory.
+    // Falls back to WebRTC VAD if the path cannot be determined.
+    let model_path = app_handle
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|d| d.join("resources").join("silero_vad.onnx"));
+
     let level_app = app_handle.clone();
 
     // Spawn a plain OS thread that owns the `!Send` types (Vad, CPAL stream).
@@ -272,7 +280,14 @@ async fn run_pipeline(
         // Keep _stream alive for the duration of the thread.
         let crate::audio::capture::CaptureHandle { rx: mut sample_rx, _stream } = capture;
 
-        let mut chunker = Chunker::new();
+        // Build the DynChunker: Silero by default, WebRTC fallback.
+        let mut chunker = match model_path {
+            Some(ref p) => DynChunker::new(VadMode::Silero, p),
+            None => {
+                eprintln!("VAD: resource_dir unavailable, falling back to WebRTC VAD");
+                DynChunker::new(VadMode::WebRtc, std::path::Path::new(""))
+            }
+        };
         let mut last_level_emit = std::time::Instant::now();
 
         loop {

@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
 import type { SessionFilter, SessionsPage, Session, SegmentWithSpeaker } from '../types/session';
 
@@ -23,5 +23,13 @@ export function useSegments(sessionId: number) {
     queryKey: ['segments', sessionId],
     queryFn: (): Promise<SegmentWithSpeaker[]> => invoke('get_segments', { sessionId }),
     enabled: sessionId > 0,
+  });
+}
+
+export function useDeleteAllSessions() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (): Promise<void> => invoke('delete_all_sessions'),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sessions'] }),
   });
 }
