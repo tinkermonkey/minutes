@@ -5,6 +5,7 @@ import { PipelineEventLog } from '../components/PipelineEventLog';
 import { TranscriptPanel } from '../components/TranscriptPanel';
 import { NewSpeakerBanner } from '../components/NewSpeakerBanner';
 import { SpeechSwiftErrorPanel } from '../components/SpeechSwiftErrorPanel';
+import { SessionSpeakersSidebar } from '../components/SessionSpeakersSidebar';
 
 export function RecordRoute() {
   const { data: speechSwiftOk } = useSpeechSwiftStatus();
@@ -30,25 +31,29 @@ export function RecordRoute() {
   }
 
   return (
-    <div className="flex flex-col gap-4 p-6 h-full">
-      {showNewSpeakerBanner && (
-        <NewSpeakerBanner onDismiss={() => setShowNewSpeakerBanner(false)} />
-      )}
+    <div className="flex h-full overflow-hidden">
+      <div className="flex flex-col gap-4 p-6 flex-1 overflow-y-auto">
+        {showNewSpeakerBanner && (
+          <NewSpeakerBanner onDismiss={() => setShowNewSpeakerBanner(false)} />
+        )}
 
-      {sessionState.status !== 'idle' && (
-        <AudioLevelGraph active={isRecording} vadActive={vadActive} />
-      )}
+        {sessionState.status !== 'idle' && (
+          <AudioLevelGraph active={isRecording} vadActive={vadActive} />
+        )}
 
-      {(sessionState.status !== 'idle' || pipelineEntries.length > 0) && (
-        <div className="flex flex-col gap-1">
-          <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wide px-1">
-            Pipeline
-          </h2>
-          <PipelineEventLog entries={pipelineEntries} />
-        </div>
-      )}
+        {(sessionState.status !== 'idle' || pipelineEntries.length > 0) && (
+          <div className="flex flex-col gap-1">
+            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wide px-1">
+              Pipeline
+            </h2>
+            <PipelineEventLog entries={pipelineEntries} />
+          </div>
+        )}
 
-      <TranscriptPanel segments={segments} isRecording={isRecording} />
+        <TranscriptPanel segments={segments} isRecording={isRecording} />
+      </div>
+
+      <SessionSpeakersSidebar />
     </div>
   );
 }

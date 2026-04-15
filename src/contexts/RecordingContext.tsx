@@ -38,6 +38,7 @@ interface RecordingContextValue {
   handleStop: () => Promise<void>;
   isStarting: boolean;
   retryHealth: { mutate: () => void; isPending: boolean };
+  updateSpeakerName: (speakerId: number, displayName: string) => void;
 }
 
 const RecordingContext = createContext<RecordingContextValue | null>(null);
@@ -191,6 +192,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     ));
   });
 
+  function updateSpeakerName(speakerId: number, displayName: string) {
+    setSegments(prev =>
+      prev.map(s => s.speaker_id === speakerId ? { ...s, display_name: displayName } : s)
+    );
+  }
+
   async function handleStart() {
     const sessionId = await startSession.mutateAsync(language);
     setSessionState({ status: 'recording', sessionId, startedAt: new Date() });
@@ -228,6 +235,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     handleStop,
     isStarting: startSession.isPending,
     retryHealth: { mutate: () => retryHealth.mutate(), isPending: retryHealth.isPending },
+    updateSpeakerName,
   };
 
   return (
