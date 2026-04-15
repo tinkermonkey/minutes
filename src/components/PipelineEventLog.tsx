@@ -6,8 +6,8 @@ interface Props {
   accumulatorTrigger: number;
 }
 
-// Shared grid: badge | time | position | duration | response | detail | count
-const GRID = 'grid grid-cols-[24px_90px_110px_48px_80px_60px_60px] gap-x-3';
+// Shared grid: badge | time | position | duration | response | speed | detail | count
+const GRID = 'grid grid-cols-[24px_90px_110px_48px_72px_52px_60px_52px] gap-x-3';
 
 function fmtTime(unixMs: number): string {
   return new Date(unixMs).toLocaleTimeString([], {
@@ -48,7 +48,13 @@ function SlowBadge() {
   );
 }
 
+function fmtSpeed(clipMs: number, responseMs: number): string {
+  if (responseMs <= 0) return '—';
+  return (clipMs / responseMs).toFixed(1) + 'x';
+}
+
 function FastRow({ e }: { e: FastPathEntry }) {
+  const clipMs = e.end_ms - e.start_ms;
   return (
     <div className={`${GRID} px-2 py-1 text-xs text-gray-700 rounded hover:bg-gray-50`}>
       <FastBadge />
@@ -60,15 +66,19 @@ function FastRow({ e }: { e: FastPathEntry }) {
           {e.response_ms} ms
         </span>
       ) : (
-        <span className="text-gray-400 animate-pulse">pending…</span>
+        <span className="text-gray-400 animate-pulse">—</span>
       )}
-      <span>{e.word_count ?? '—'}</span>
+      <span className="font-mono text-gray-500">
+        {e.response_ms !== undefined ? fmtSpeed(clipMs, e.response_ms) : '—'}
+      </span>
+      <span>{e.word_count !== undefined ? `${e.word_count}w` : '—'}</span>
       <span>{e.speaker_count ?? '—'}</span>
     </div>
   );
 }
 
 function SlowRow({ e }: { e: SlowPathEntry }) {
+  const clipMs = e.clip_speech_secs * 1000;
   return (
     <div className={`${GRID} px-2 py-1 text-xs text-gray-700 rounded hover:bg-gray-50`}>
       <SlowBadge />
@@ -80,8 +90,11 @@ function SlowRow({ e }: { e: SlowPathEntry }) {
           {e.response_ms} ms
         </span>
       ) : (
-        <span className="text-gray-400 animate-pulse">pending…</span>
+        <span className="text-gray-400 animate-pulse">—</span>
       )}
+      <span className="font-mono text-gray-500">
+        {e.response_ms !== undefined ? fmtSpeed(clipMs, e.response_ms) : '—'}
+      </span>
       <span>{e.clip_speech_secs.toFixed(1)}s</span>
       <span>{e.segment_count ?? '—'}</span>
     </div>
@@ -138,7 +151,8 @@ export function PipelineEventLog({ entries, accumulatorSecs, accumulatorTrigger 
             <span>Position</span>
             <span>Len</span>
             <span>Response</span>
-            <span>Detail</span>
+            <span>Speed</span>
+            <span>Words/Speech</span>
             <span>Count</span>
           </div>
 

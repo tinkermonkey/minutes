@@ -137,8 +137,8 @@ async fn handle_chunk(
                 &NewSegment {
                     session_id,
                     speaker_id:       seg.speaker_id,
-                    start_ms:         (seg.start * 1000.0) as i64,
-                    end_ms:           (seg.end   * 1000.0) as i64,
+                    start_ms:         chunk.start_ms as i64 + (seg.start * 1000.0) as i64,
+                    end_ms:           chunk.start_ms as i64 + (seg.end   * 1000.0) as i64,
                     transcript_text:  transcript_text.clone(),
                     chunk_start_secs: Some(chunk_start_secs),
                     chunk_end_secs:   Some(chunk_end_secs),
@@ -158,8 +158,8 @@ async fn handle_chunk(
                     &db,
                     speaker.id,
                     session_id,
-                    (seg.start * 1000.0) as i64,
-                    (seg.end   * 1000.0) as i64,
+                    chunk.start_ms as i64 + (seg.start * 1000.0) as i64,
+                    chunk.start_ms as i64 + (seg.end   * 1000.0) as i64,
                     &audio_path,
                 );
             }
@@ -198,8 +198,8 @@ async fn handle_chunk(
                     speaker_label:   seg.speaker_label.clone(),
                     display_name,
                     status:          if seg.speaker_id.is_some() { "confirmed".to_string() } else { "pending".to_string() },
-                    start_ms:        (seg.start * 1000.0) as i64,
-                    end_ms:          (seg.end   * 1000.0) as i64,
+                    start_ms:        chunk.start_ms as i64 + (seg.start * 1000.0) as i64,
+                    end_ms:          chunk.start_ms as i64 + (seg.end   * 1000.0) as i64,
                     transcript_text: transcript_text.clone(),
                 },
                 speaker_event,
