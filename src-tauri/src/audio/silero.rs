@@ -1,64 +1,65 @@
-//! Silero VAD v5 backend using `ort` (OnnxRuntime Rust bindings).
+//! Silero VAD backend using `ort` (OnnxRuntime Rust bindings).
 //!
-//! Silero v5 specifics:
-//! - Frame: 512 samples at 16 kHz (32 ms)
-//! - Inputs:  `input` f32[1,512], `h` f32[2,1,64], `c` f32[2,1,64]  (sr removed in v5)
-//! - Outputs: `output` f32[1,1] (voiced probability), `hn` f32[2,1,64], `cn` f32[2,1,64]
-//! - Voiced if output[0] > 0.5
+//! Model introspection (resources/silero_vad.onnx):
+//!   Inputs:  `input` f32[None,None], `state` f32[2,None,128], `sr` i64[]
+//!   Outputs: `output` f32[None,1], `stateN` f32[None,None,None]
 //!
-//! Why ort instead of tract-onnx: tract cannot handle the ONNX `If` operator that
-//! Silero v5 uses for sample-rate branching. ort v2 supports the full ONNX spec
-//! and its `Session` is `Send + Sync`.
+//! Usage:
+//!   - input shape: [1, 512] at 16 kHz (512 samples = 32 ms per frame)
+//!   - state shape: [2, 1, 128] (single-batch LSTM state)
+//!   - sr: scalar 16000
+//!   - Voiced if output[0] > 0.5
+//!
+//! Why ort instead of tract-onnx: tract cannot handle the ONNX `If` operator.
+//! ort v2 supports the full ONNX spec and its `Session` is `Send + Sync`.
 //!
 //! ## ort 2.0.0-rc.9 API notes (version locked by fastembed dependency)
 //!
-//! - `Session` is at `ort::session::Session`, not re-exported at the crate root.
-//! - `inputs!` macro returns `Result<...>` — must propagate with `?` or match.
-//! - In the named form, each value goes through `TryInto::<DynValue>` — ndarray
-//!   `Array` and `ArrayView` types implement this conversion directly.
-//! - `try_extract_tensor::<T>()` returns `Result<ArrayViewD<T>>` (no shape tuple).
+//! - `Session` is at `ort::session::Session`.
+//! - `inputs!` macro returns `Result<...>` — must propagate with `?`.
+//! - `try_extract_tensor::<T>()` returns `Result<ArrayViewD<T>>`.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use ndarray::{Array2, Array3, ArrayD};
+use ndarray::{Array1, Array2, Array3, ArrayD};
 use ort::session::Session;
 
 use super::vad::VadBackend;
 
-/// Number of samples per Silero v5 frame at 16 kHz.
+/// Number of samples per frame at 16 kHz (32 ms).
 const FRAME_SAMPLES: usize = 512;
+
+/// Sample rate sent to the model.
+const SAMPLE_RATE: i64 = 16000;
 
 /// Voiced probability threshold.
 const SPEECH_THRESHOLD: f32 = 0.5;
 
-/// Hidden-state shape [2, 1, 64] as a constant tuple for `Array3::zeros`.
-const H_DIM: (usize, usize, usize) = (2, 1, 64);
+/// LSTM state shape [2, 1, 128].
+const STATE_DIM: (usize, usize, usize) = (2, 1, 128);
 
 pub struct SileroBackend {
     /// OnnxRuntime session. `Session` is `Send + Sync` via `SharedSessionInner`
     /// unsafe impls in ort; `Arc` lets us clone the backend cheaply if needed.
     session: Arc<Session>,
-    /// LSTM hidden state h, shape [2, 1, 64].
-    h: ArrayD<f32>,
-    /// LSTM cell state c, shape [2, 1, 64].
-    c: ArrayD<f32>,
+    /// Combined LSTM state, shape [2, 1, 128].
+    state: ArrayD<f32>,
 }
 
 impl SileroBackend {
-    /// Load the Silero v5 ONNX model from `model_path`.
+    /// Load the Silero ONNX model from `model_path`.
     pub fn new(model_path: &Path) -> anyhow::Result<Self> {
         let session = Session::builder()?.commit_from_file(model_path)?;
         Ok(Self {
             session: Arc::new(session),
-            h: Self::zero_state(),
-            c: Self::zero_state(),
+            state: Self::zero_state(),
         })
     }
 
-    /// Returns a zeroed LSTM state array of shape [2, 1, 64].
+    /// Returns a zeroed LSTM state array of shape [2, 1, 128].
     fn zero_state() -> ArrayD<f32> {
-        Array3::<f32>::zeros(H_DIM).into_dyn()
+        Array3::<f32>::zeros(STATE_DIM).into_dyn()
     }
 }
 
@@ -70,7 +71,7 @@ impl VadBackend for SileroBackend {
     fn classify_frame(&mut self, frame: &[f32]) -> bool {
         debug_assert_eq!(frame.len(), FRAME_SAMPLES);
 
-        // Build owned input array [1, 512].
+        // Build input [1, 512].
         let input_arr =
             match Array2::<f32>::from_shape_vec((1, FRAME_SAMPLES), frame.to_vec()) {
                 Ok(a) => a,
@@ -80,21 +81,15 @@ impl VadBackend for SileroBackend {
                 }
             };
 
-        // Build the session inputs.
-        //
-        // In ort 2.0.0-rc.9 the named inputs! macro returns Result<Vec<...>>,
-        // where each value is converted via TryInto::<DynValue>.
-        //
-        // - `input_arr`   : Array2<f32>          — IntoValueTensor impl (owned, may copy if non-contiguous)
-        // - `self.h.view()`: ArrayViewD<f32>      — TryFrom<ArrayView> for DynValue impl (always copies)
-        // - `self.c.view()`: ArrayViewD<f32>      — same
-        //
-        // Both arrays were created from Array3::zeros or assigned from to_owned()
-        // so they are guaranteed contiguous; the copy is cheap (2*1*64 = 128 f32).
+        // Scalar sample rate as a 1-D array with one element (shape [1]).
+        // ort's ndarray feature converts Array1 → DynValue; a true scalar
+        // Array0 hits a different code path that may not be supported.
+        let sr_arr = Array1::<i64>::from_vec(vec![SAMPLE_RATE]);
+
         let run_inputs = match ort::inputs![
             "input" => input_arr,
-            "h"     => self.h.view(),
-            "c"     => self.c.view(),
+            "state" => self.state.view(),
+            "sr"    => sr_arr,
         ] {
             Ok(i) => i,
             Err(e) => {
@@ -111,8 +106,7 @@ impl VadBackend for SileroBackend {
             }
         };
 
-        // Extract voiced probability.
-        // try_extract_tensor in rc.9 returns Result<ArrayViewD<T>>.
+        // Extract voiced probability (first element of output [None, 1]).
         let prob = outputs["output"]
             .try_extract_tensor::<f32>()
             .ok()
@@ -120,32 +114,22 @@ impl VadBackend for SileroBackend {
             .and_then(|view| view.iter().next().copied())
             .unwrap_or(0.0);
 
-        // Update LSTM hidden states.  Errors here are non-fatal — stale state
-        // degrades VAD accuracy for the current utterance but does not crash
-        // the pipeline.
-        if let Ok(hn_view) = outputs["hn"].try_extract_tensor::<f32>() {
-            self.h = hn_view.to_owned();
+        // Update LSTM state from stateN.
+        if let Ok(state_view) = outputs["stateN"].try_extract_tensor::<f32>() {
+            self.state = state_view.to_owned();
         } else {
-            eprintln!("silero: failed to extract hn state");
-        }
-        if let Ok(cn_view) = outputs["cn"].try_extract_tensor::<f32>() {
-            self.c = cn_view.to_owned();
-        } else {
-            eprintln!("silero: failed to extract cn state");
+            eprintln!("silero: failed to extract stateN");
         }
 
         prob > SPEECH_THRESHOLD
     }
 
     fn reset(&mut self) {
-        self.h = Self::zero_state();
-        self.c = Self::zero_state();
+        self.state = Self::zero_state();
     }
 }
 
-// Verify at compile time that SileroBackend is Send.
-// `Session` is Send + Sync (via unsafe impls on SharedSessionInner in ort).
-// `Arc<Session>` is Send. `ArrayD<f32>` is Send.
+// Compile-time Send check.
 fn _assert_send()
 where
     SileroBackend: Send,
@@ -156,32 +140,20 @@ where
 mod tests {
     use super::*;
 
-    /// Verify the zero-state array has the correct shape.
     #[test]
     fn zero_state_shape() {
         let s = SileroBackend::zero_state();
-        assert_eq!(s.shape(), &[2usize, 1, 64]);
+        assert_eq!(s.shape(), &[2usize, 1, 128]);
     }
 
-    /// Verify the frame size constant is 512.
     #[test]
     fn frame_size_constant() {
         assert_eq!(FRAME_SAMPLES, 512);
     }
 
-    /// Verify zero_state produces all-zero values.
     #[test]
     fn zero_state_values() {
         let s = SileroBackend::zero_state();
         assert!(s.iter().all(|&v| v == 0.0_f32));
-    }
-
-    /// Verify that two successive zero states are identical.
-    #[test]
-    fn zero_state_is_idempotent() {
-        let a = SileroBackend::zero_state();
-        let b = SileroBackend::zero_state();
-        assert_eq!(a.shape(), b.shape());
-        assert!(a.iter().zip(b.iter()).all(|(x, y)| x == y));
     }
 }
