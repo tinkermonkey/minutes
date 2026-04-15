@@ -1,11 +1,14 @@
+pub mod accumulator;
 pub mod capture;
 pub mod chunker;
 pub mod silero;
 pub mod vad;
 
+pub use accumulator::SpeechAccumulator;
+
 use std::path::Path;
 
-use chunker::Chunker;
+use chunker::{Chunker, ChunkerOutput};
 use silero::SileroBackend;
 use vad::WebRtcBackend;
 
@@ -60,14 +63,14 @@ impl DynChunker {
         }
     }
 
-    pub fn push_samples(&mut self, samples: &[f32]) -> Option<(Vec<u8>, u64, u64)> {
+    pub fn push_samples(&mut self, samples: &[f32]) -> Option<ChunkerOutput> {
         match self {
             DynChunker::WebRtc(c) => c.push_samples(samples),
             DynChunker::Silero(c) => c.push_samples(samples),
         }
     }
 
-    pub fn flush(&mut self) -> Option<(Vec<u8>, u64, u64)> {
+    pub fn flush(&mut self) -> Option<ChunkerOutput> {
         match self {
             DynChunker::WebRtc(c) => c.flush(),
             DynChunker::Silero(c) => c.flush(),
@@ -78,6 +81,17 @@ impl DynChunker {
         match self {
             DynChunker::WebRtc(c) => c.reset(),
             DynChunker::Silero(c) => c.reset(),
+        }
+    }
+
+    /// Whether the most recently classified frame was speech.
+    ///
+    /// Used by the capture OS thread to detect VAD state transitions and emit
+    /// `vad_state` events to the frontend.
+    pub fn is_speech(&self) -> bool {
+        match self {
+            DynChunker::WebRtc(c) => c.vad.last_frame_was_speech,
+            DynChunker::Silero(c) => c.vad.last_frame_was_speech,
         }
     }
 }

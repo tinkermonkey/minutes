@@ -89,6 +89,9 @@ pub struct VadClassifier<B: VadBackend> {
     /// Short silence tail kept as padding — prepended when the next voiced
     /// frame arrives, or discarded on flush.
     silence_pad: Vec<f32>,
+    /// Whether the most recently classified frame was speech.
+    /// Exposed for VAD state transition tracking in the capture thread.
+    pub last_frame_was_speech: bool,
 }
 
 impl<B: VadBackend> VadClassifier<B> {
@@ -98,6 +101,7 @@ impl<B: VadBackend> VadClassifier<B> {
             voiced_buf: Vec::new(),
             silence_run: 0,
             silence_pad: Vec::new(),
+            last_frame_was_speech: false,
         }
     }
 
@@ -136,6 +140,7 @@ impl<B: VadBackend> VadClassifier<B> {
         );
 
         let is_speech = self.backend.classify_frame(frame);
+        self.last_frame_was_speech = is_speech;
 
         if is_speech {
             // Prepend accumulated silence padding so utterance boundaries
@@ -188,6 +193,7 @@ impl<B: VadBackend> VadClassifier<B> {
         self.voiced_buf.clear();
         self.silence_pad.clear();
         self.silence_run = 0;
+        self.last_frame_was_speech = false;
     }
 }
 

@@ -1,5 +1,18 @@
 use super::vad::{VadBackend, VadClassifier};
 
+/// A chunk emitted by the `Chunker` when the VAD decides to flush.
+pub struct ChunkerOutput {
+    /// WAV-encoded bytes ready to POST to speech-swift.
+    pub wav_bytes: Vec<u8>,
+    /// Raw f32 speech-only samples (16 kHz mono, no WAV header).
+    /// Used by the slow-path accumulator.
+    pub speech_frames: Vec<f32>,
+    /// Session-relative start time in milliseconds.
+    pub start_ms: u64,
+    /// Session-relative end time in milliseconds.
+    pub end_ms: u64,
+}
+
 /// Accepts raw f32 samples from the CPAL callback, feeds frames to the VAD,
 /// and emits WAV-encoded buffers when the VAD decides to flush.
 ///
@@ -7,7 +20,7 @@ use super::vad::{VadBackend, VadClassifier};
 /// from the backend at runtime so `Chunker<WebRtcBackend>` and
 /// `Chunker<SileroBackend>` both work without change.
 pub struct Chunker<B: VadBackend> {
-    vad: VadClassifier<B>,
+    pub(crate) vad: VadClassifier<B>,
     /// Partial frame accumulator — holds leftover samples between
     /// `push_samples` calls.
     frame_buf: Vec<f32>,
@@ -29,12 +42,12 @@ impl<B: VadBackend> Chunker<B> {
 
     /// Push a batch of samples received from CPAL.
     ///
-    /// Returns `Some((wav_bytes, start_ms, end_ms))` when the VAD emits a
-    /// chunk, `None` otherwise.
+    /// Returns `Some(ChunkerOutput)` when the VAD emits a chunk, `None`
+    /// otherwise.
     ///
     /// Only one chunk per call is returned.  In practice CPAL batches are
     /// small (~10 ms) so at most one VAD flush happens per call.
-    pub fn push_samples(&mut self, samples: &[f32]) -> Option<(Vec<u8>, u64, u64)> {
+    pub fn push_samples(&mut self, samples: &[f32]) -> Option<ChunkerOutput> {
         let frame_size = self.vad.frame_size();
         self.frame_buf.extend_from_slice(samples);
 
@@ -53,7 +66,8 @@ impl<B: VadBackend> Chunker<B> {
                 let start_ms = samples_to_ms(self.chunk_start_samples);
                 let end_ms = samples_to_ms(self.total_samples);
                 self.chunk_start_samples = self.total_samples;
-                return Some((encode_wav(&chunk), start_ms, end_ms));
+                let wav_bytes = encode_wav(&chunk);
+                return Some(ChunkerOutput { wav_bytes, speech_frames: chunk, start_ms, end_ms });
             }
         }
 
@@ -70,11 +84,12 @@ impl<B: VadBackend> Chunker<B> {
     }
 
     /// Flush remaining voiced content at session end.
-    pub fn flush(&mut self) -> Option<(Vec<u8>, u64, u64)> {
+    pub fn flush(&mut self) -> Option<ChunkerOutput> {
         if let Some(chunk) = self.vad.flush() {
             let start_ms = samples_to_ms(self.chunk_start_samples);
             let end_ms = samples_to_ms(self.total_samples);
-            return Some((encode_wav(&chunk), start_ms, end_ms));
+            let wav_bytes = encode_wav(&chunk);
+            return Some(ChunkerOutput { wav_bytes, speech_frames: chunk, start_ms, end_ms });
         }
         None
     }
@@ -88,7 +103,7 @@ fn samples_to_ms(samples: u64) -> u64 {
 ///
 /// Uses `expect` on hound operations because writing to an in-memory Vec
 /// cannot fail for the operations performed here (no I/O, no disk full).
-fn encode_wav(samples: &[f32]) -> Vec<u8> {
+pub(crate) fn encode_wav(samples: &[f32]) -> Vec<u8> {
     use hound::{SampleFormat, WavSpec, WavWriter};
     use std::io::Cursor;
 
@@ -152,6 +167,21 @@ mod tests {
         let result = chunker.push_samples(&vec![0.0f32; 80]);
         assert!(result.is_none());
         assert_eq!(chunker.frame_buf.len(), 80);
+    }
+
+    #[test]
+    fn chunker_output_has_matching_frames_and_wav() {
+        // Force a flush by pushing voiced content and then silence directly.
+        let mut chunker = webrtc_chunker();
+        // Push enough voiced audio that voiced_buf is populated, then flush.
+        chunker.vad.voiced_buf.extend(vec![0.5f32; 160]);
+        let output = chunker.flush();
+        assert!(output.is_some());
+        let out = output.unwrap();
+        // speech_frames should match what was in voiced_buf
+        assert_eq!(out.speech_frames.len(), 160);
+        // WAV header starts with RIFF
+        assert_eq!(&out.wav_bytes[0..4], b"RIFF");
     }
 
 }

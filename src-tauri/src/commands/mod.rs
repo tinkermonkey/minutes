@@ -59,13 +59,18 @@ fn save_wav_chunk(app: &tauri::AppHandle, session_id: i64, start_ms: u64, bytes:
 
 /// A chunk produced by the capture thread, ready for transcription.
 struct AudioChunk {
-    wav_bytes: Vec<u8>,
-    start_ms:  u64,
-    end_ms:    u64,
+    wav_bytes:     Vec<u8>,
+    /// Raw f32 speech-only samples (16 kHz mono) — fed to the slow-path accumulator.
+    speech_frames: Vec<f32>,
+    start_ms:      u64,
+    end_ms:        u64,
 }
 
 /// Send one WAV chunk to the audio-server, persist results to SQLite, compute
 /// embeddings, and fire Tauri events.
+///
+/// Returns the segment IDs inserted so the caller can feed the slow-path
+/// accumulator.
 ///
 /// The DB mutex is acquired, all inserts are done synchronously, and the lock
 /// is released before any `.await`. This is the critical invariant that keeps
@@ -75,11 +80,14 @@ async fn handle_chunk(
     chunk:       AudioChunk,
     app:         &tauri::AppHandle,
     embed_queue: &mut Vec<(i64, String)>,
-) {
+) -> Vec<i64> {
     let audio_path = save_wav_chunk(app, session_id, chunk.start_ms, &chunk.wav_bytes);
 
     let state = app.state::<AppState>();
     let base_url = state.speech_swift_url.clone();
+
+    let chunk_start_secs = chunk.start_ms as f64 / 1000.0;
+    let chunk_end_secs   = chunk.end_ms   as f64 / 1000.0;
 
     events::emit_chunk_sent(app, events::ChunkSentEvent {
         start_ms:   chunk.start_ms,
@@ -92,17 +100,19 @@ async fn handle_chunk(
         Ok(r) => r,
         Err(e) => {
             eprintln!("speech-swift transcribe error: {e}");
-            return;
+            events::emit_speech_swift_unreachable(app);
+            return Vec::new();
         }
     };
     let response_ms = t0.elapsed().as_millis() as u64;
 
     // --- DB work: acquire lock, do all inserts, release before any await. ---
     let now_ms = unix_ms();
-    let events_to_emit: Vec<(SegmentEvent, Option<SpeakerEvent>)> = {
+    let (events_to_emit, segment_ids): (Vec<(SegmentEvent, Option<SpeakerEvent>)>, Vec<i64>) = {
         let db = state.db.lock().expect("db mutex poisoned");
 
         let mut events = Vec::with_capacity(response.segments.len());
+        let mut ids    = Vec::with_capacity(response.segments.len());
 
         for seg in &response.segments {
             // Upsert the speaker only when speech-swift assigned a speaker ID.
@@ -130,8 +140,8 @@ async fn handle_chunk(
                     start_ms:         (seg.start * 1000.0) as i64,
                     end_ms:           (seg.end   * 1000.0) as i64,
                     transcript_text:  transcript_text.clone(),
-                    chunk_start_secs: None,
-                    chunk_end_secs:   None,
+                    chunk_start_secs: Some(chunk_start_secs),
+                    chunk_end_secs:   Some(chunk_end_secs),
                 },
             ) {
                 Ok(id) => id,
@@ -140,6 +150,8 @@ async fn handle_chunk(
                     continue;
                 }
             };
+
+            ids.push(segment_id);
 
             if let Some((ref speaker, _)) = speaker_opt {
                 let _ = db::samples::insert_speaker_sample(
@@ -194,7 +206,7 @@ async fn handle_chunk(
             ));
         }
 
-        events
+        (events, ids)
         // `db` MutexGuard dropped here — lock released before any await.
     };
 
@@ -223,6 +235,8 @@ async fn handle_chunk(
             events::emit_new_speaker(app, ev);
         }
     }
+
+    segment_ids
 }
 
 /// Retry all segments that failed to embed during the hot path.
@@ -242,6 +256,101 @@ async fn drain_embed_queue(queue: Vec<(i64, String)>, app: &tauri::AppHandle) {
             Err(e) => eprintln!("embed drain error for segment {segment_id}: {e}"),
         }
     }
+}
+
+/// Process an accumulated speech clip through speech-swift (slow path).
+///
+/// Drains the accumulator, encodes the frames as WAV, POSTs to speech-swift,
+/// and for each resulting segment finds the overlapping fast-path segment IDs
+/// and updates their `speaker_id` / `status` in SQLite, firing
+/// `speaker_resolved` events so the frontend can update in place.
+async fn run_slow_path(
+    base_url:    &str,
+    app:         &tauri::AppHandle,
+    accumulator: &mut crate::audio::SpeechAccumulator,
+) {
+    let Some(clip) = accumulator.drain() else { return };
+
+    // Emit zeroed accumulator state after drain.
+    events::emit_accumulator_updated(app, events::AccumulatorUpdatedEvent {
+        speech_secs:  0.0,
+        trigger_secs: crate::audio::accumulator::SPEECH_TRIGGER_SECS,
+    });
+
+    let wav_bytes = crate::audio::chunker::encode_wav(&clip.frames);
+    let speech_secs = clip.frames.len() as f64 / 16_000.0;
+
+    events::emit_slow_path_sent(app, events::SlowPathSentEvent {
+        start_ms:         clip.clip_start_ms,
+        end_ms:           clip.clip_end_ms,
+        clip_speech_secs: speech_secs,
+        sent_at_ms:       unix_ms() as u64,
+    });
+
+    let t0 = std::time::Instant::now();
+    let response = match speech_swift::transcribe_chunk(base_url, wav_bytes).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("slow-path speech-swift error: {e}");
+            events::emit_speech_swift_unreachable(app);
+            return;
+        }
+    };
+    let response_ms = t0.elapsed().as_millis() as u64;
+
+    events::emit_slow_path_done(app, events::SlowPathDoneEvent {
+        start_ms:      clip.clip_start_ms,
+        response_ms,
+        segment_count: response.segments.len() as u32,
+    });
+
+    // For each slow-path segment, match it back to overlapping fast-path DB
+    // rows via the accumulator's chunk list and update their speaker_id.
+    let state = app.state::<AppState>();
+    let now_ms = unix_ms();
+    let db = state.db.lock().expect("db mutex poisoned");
+
+    for seg in &response.segments {
+        let Some(speaker_id) = seg.speaker_id else { continue };
+
+        // Convert slow-path segment times (seconds from clip start) to session
+        // ms so we can match against the chunk timeline.
+        let seg_start_ms = clip.clip_start_ms + (seg.start * 1000.0) as u64;
+        let seg_end_ms   = clip.clip_start_ms + (seg.end   * 1000.0) as u64;
+
+        // Collect fast-path DB row IDs whose chunk overlaps this segment.
+        let overlapping_ids: Vec<i64> = clip.chunks.iter()
+            .filter(|ch| ch.session_start_ms < seg_end_ms && ch.session_end_ms > seg_start_ms)
+            .flat_map(|ch| ch.segment_ids.iter().copied())
+            .collect();
+
+        if overlapping_ids.is_empty() {
+            continue;
+        }
+
+        // Upsert the speaker so it exists in our local DB before referencing it.
+        let (speaker, _) = match db::speakers::upsert_speaker(&db, speaker_id, now_ms) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("slow-path upsert speaker error: {e}");
+                continue;
+            }
+        };
+
+        for segment_id in overlapping_ids {
+            if let Err(e) = db::segments::update_segment_speaker(&db, segment_id, speaker_id) {
+                eprintln!("slow-path update_segment_speaker error: {e}");
+                continue;
+            }
+            events::emit_segment_speaker_resolved(app, events::SegmentSpeakerResolvedEvent {
+                segment_id,
+                speaker_id,
+                speaker_label: seg.speaker_label.clone(),
+                display_name:  speaker.display_name.clone(),
+            });
+        }
+    }
+    // `db` MutexGuard dropped here.
 }
 
 /// Core pipeline task.
@@ -297,6 +406,8 @@ async fn run_pipeline(
         .map(|d| d.join("resources").join("silero_vad.onnx"));
 
     let level_app = app_handle.clone();
+    // Clone app_handle for VAD state events emitted from the OS thread.
+    let vad_app = app_handle.clone();
 
     // Spawn a plain OS thread that owns the `!Send` types (Vad, CPAL stream).
     std::thread::spawn(move || {
@@ -321,6 +432,7 @@ async fn run_pipeline(
             }
         };
         let mut last_level_emit = std::time::Instant::now();
+        let mut last_vad_active = false;
 
         loop {
             // Poll the stop channel — non-blocking.
@@ -333,12 +445,21 @@ async fn run_pipeline(
             let mut tick_samples: Vec<f32> = Vec::new();
             while let Ok(samples) = sample_rx.try_recv() {
                 tick_samples.extend_from_slice(&samples);
-                if let Some((wav, start, end)) = chunker.push_samples(&samples) {
+                if let Some(output) = chunker.push_samples(&samples) {
                     let _ = chunk_tx.blocking_send(AudioChunk {
-                        wav_bytes: wav,
-                        start_ms:  start,
-                        end_ms:    end,
+                        wav_bytes:     output.wav_bytes,
+                        speech_frames: output.speech_frames,
+                        start_ms:      output.start_ms,
+                        end_ms:        output.end_ms,
                     });
+                }
+                // Note: only the final frame's VAD state is observable per CPAL batch.
+                // Sub-batch speech↔silence transitions within a single batch are not emitted.
+                // In practice CPAL batches are short (~10ms) so this is rarely consequential.
+                let currently_speech = chunker.is_speech();
+                if currently_speech != last_vad_active {
+                    last_vad_active = currently_speech;
+                    events::emit_vad_state(&vad_app, currently_speech);
                 }
             }
 
@@ -352,11 +473,12 @@ async fn run_pipeline(
         }
 
         // Flush remaining voiced content.
-        if let Some((wav, start, end)) = chunker.flush() {
+        if let Some(output) = chunker.flush() {
             let _ = chunk_tx.blocking_send(AudioChunk {
-                wav_bytes: wav,
-                start_ms:  start,
-                end_ms:    end,
+                wav_bytes:     output.wav_bytes,
+                speech_frames: output.speech_frames,
+                start_ms:      output.start_ms,
+                end_ms:        output.end_ms,
             });
         }
 
@@ -368,6 +490,32 @@ async fn run_pipeline(
 
     // Async consumer: handles network + DB work.
     let mut embed_queue: Vec<(i64, String)> = Vec::new();
+    let mut accumulator = crate::audio::SpeechAccumulator::new();
+    let base_url = app_handle.state::<AppState>().speech_swift_url.clone();
+
+    /// Append a processed chunk to the accumulator and trigger the slow path
+    /// if enough speech has built up or the accumulator has gone idle.
+    async fn maybe_run_slow_path(
+        base_url:      &str,
+        app:           &tauri::AppHandle,
+        accumulator:   &mut crate::audio::SpeechAccumulator,
+        speech_frames: Vec<f32>,
+        start_ms:      u64,
+        end_ms:        u64,
+        segment_ids:   Vec<i64>,
+    ) {
+        accumulator.append(speech_frames, start_ms, end_ms, segment_ids);
+        events::emit_accumulator_updated(app, events::AccumulatorUpdatedEvent {
+            speech_secs:  accumulator.speech_secs,
+            trigger_secs: crate::audio::accumulator::SPEECH_TRIGGER_SECS,
+        });
+
+        if accumulator.should_trigger()
+            || accumulator.should_flush_for_inactivity(std::time::Duration::from_secs(20))
+        {
+            run_slow_path(base_url, app, accumulator).await;
+        }
+    }
 
     tokio::select! {
         _ = stop_rx => {
@@ -375,15 +523,37 @@ async fn run_pipeline(
             let _ = thread_stop_tx.send(());
             // Drain any remaining chunks the thread flushed before exiting.
             while let Some(chunk) = chunk_rx.recv().await {
-                handle_chunk(session_id, chunk, &app_handle, &mut embed_queue).await;
+                let speech_frames = chunk.speech_frames.clone();
+                let start_ms = chunk.start_ms;
+                let end_ms   = chunk.end_ms;
+                let ids = handle_chunk(session_id, chunk, &app_handle, &mut embed_queue).await;
+                maybe_run_slow_path(
+                    &base_url, &app_handle, &mut accumulator,
+                    speech_frames, start_ms, end_ms, ids,
+                ).await;
+            }
+            // Final drain at session end.
+            if !accumulator.is_empty() {
+                run_slow_path(&base_url, &app_handle, &mut accumulator).await;
             }
         }
         _ = async {
             while let Some(chunk) = chunk_rx.recv().await {
-                handle_chunk(session_id, chunk, &app_handle, &mut embed_queue).await;
+                let speech_frames = chunk.speech_frames.clone();
+                let start_ms = chunk.start_ms;
+                let end_ms   = chunk.end_ms;
+                let ids = handle_chunk(session_id, chunk, &app_handle, &mut embed_queue).await;
+                maybe_run_slow_path(
+                    &base_url, &app_handle, &mut accumulator,
+                    speech_frames, start_ms, end_ms, ids,
+                ).await;
             }
         } => {
             // Capture thread exited on its own (e.g. device disconnected).
+            // Final drain at session end.
+            if !accumulator.is_empty() {
+                run_slow_path(&base_url, &app_handle, &mut accumulator).await;
+            }
         }
     }
 

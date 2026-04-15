@@ -126,3 +126,10 @@ pub fn emit_slow_path_sent(app: &tauri::AppHandle, ev: SlowPathSentEvent) {
 pub fn emit_slow_path_done(app: &tauri::AppHandle, ev: SlowPathDoneEvent) {
     let _ = app.emit("slow_path_done", ev);
 }
+
+/// Emitted when speech-swift is unreachable (network error, sidecar crash, etc.).
+/// The frontend listens for this to surface an error panel during recording.
+/// Payload is `null` — the frontend only needs to know the event occurred.
+pub fn emit_speech_swift_unreachable(app: &tauri::AppHandle) {
+    let _ = app.emit("speech_swift_unreachable", ());
+}

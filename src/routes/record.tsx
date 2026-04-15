@@ -43,7 +43,7 @@ export function RecordRoute() {
   const [elapsed, setElapsed]           = useState(0);
   const [pipelineEntries, setPipelineEntries] = useState<PipelineEntry[]>([]);
   const [accumulatorSecs,    setAccumulatorSecs]    = useState(0);
-  const [accumulatorTrigger, setAccumulatorTrigger] = useState(30);
+  const [accumulatorTrigger, setAccumulatorTrigger] = useState(10);
 
   const isRecording = sessionState.status === 'recording';
   const vadActive   = useVadState(isRecording);
@@ -185,7 +185,7 @@ export function RecordRoute() {
     setElapsed(0);
     setPipelineEntries([]);
     setAccumulatorSecs(0);
-    setAccumulatorTrigger(30);
+    setAccumulatorTrigger(10);
     pendingResolutions.current.clear();
   }
 
