@@ -105,23 +105,33 @@ async fn handle_chunk(
         let mut events = Vec::with_capacity(response.segments.len());
 
         for seg in &response.segments {
-            let (speaker, is_new) =
-                match db::speakers::upsert_speaker(&db, seg.speaker_id, now_ms) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("upsert speaker error: {e}");
-                        continue;
+            // Upsert the speaker only when speech-swift assigned a speaker ID.
+            // A None speaker_id means the segment is pending — skip upsert.
+            let speaker_opt: Option<(crate::db::speakers::Speaker, bool)> =
+                if let Some(sid) = seg.speaker_id {
+                    match db::speakers::upsert_speaker(&db, sid, now_ms) {
+                        Ok(r) => Some(r),
+                        Err(e) => {
+                            eprintln!("upsert speaker error: {e}");
+                            continue;
+                        }
                     }
+                } else {
+                    None
                 };
+
+            let transcript_text = seg.transcript.clone().unwrap_or_default();
 
             let segment_id = match db::segments::insert_segment(
                 &db,
                 &NewSegment {
                     session_id,
-                    speaker_id: seg.speaker_id,
-                    start_ms:   (seg.start * 1000.0) as i64,
-                    end_ms:     (seg.end   * 1000.0) as i64,
-                    transcript_text: seg.transcript.clone(),
+                    speaker_id:       seg.speaker_id,
+                    start_ms:         (seg.start * 1000.0) as i64,
+                    end_ms:           (seg.end   * 1000.0) as i64,
+                    transcript_text:  transcript_text.clone(),
+                    chunk_start_secs: None,
+                    chunk_end_secs:   None,
                 },
             ) {
                 Ok(id) => id,
@@ -131,33 +141,41 @@ async fn handle_chunk(
                 }
             };
 
-            let _ = db::samples::insert_speaker_sample(
-                &db,
-                speaker.id,
-                session_id,
-                (seg.start * 1000.0) as i64,
-                (seg.end   * 1000.0) as i64,
-                &audio_path,
-            );
+            if let Some((ref speaker, _)) = speaker_opt {
+                let _ = db::samples::insert_speaker_sample(
+                    &db,
+                    speaker.id,
+                    session_id,
+                    (seg.start * 1000.0) as i64,
+                    (seg.end   * 1000.0) as i64,
+                    &audio_path,
+                );
+            }
 
             // Try embedding synchronously; on failure, defer to the drain queue.
-            match embed::embed(&seg.transcript) {
+            match embed::embed(&transcript_text) {
                 Ok(vec) => {
                     let _ = db::segments::insert_segment_embedding(&db, segment_id, &vec);
                 }
                 Err(_) => {
-                    embed_queue.push((segment_id, seg.transcript.clone()));
+                    embed_queue.push((segment_id, transcript_text.clone()));
                 }
             }
 
-            let speaker_event = if is_new || speaker.display_name.is_none() {
-                Some(SpeakerEvent {
-                    id:              speaker.id,
-                    speech_swift_id: speaker.speech_swift_id,
-                    display_name:    speaker.display_name.clone(),
-                })
-            } else {
-                None
+            let (display_name, speaker_event) = match speaker_opt {
+                Some((ref speaker, is_new)) => {
+                    let ev = if is_new || speaker.display_name.is_none() {
+                        Some(SpeakerEvent {
+                            id:              speaker.id,
+                            speech_swift_id: speaker.speech_swift_id,
+                            display_name:    speaker.display_name.clone(),
+                        })
+                    } else {
+                        None
+                    };
+                    (speaker.display_name.clone(), ev)
+                }
+                None => (None, None),
             };
 
             events.push((
@@ -166,10 +184,11 @@ async fn handle_chunk(
                     session_id,
                     speaker_id:      seg.speaker_id,
                     speaker_label:   seg.speaker_label.clone(),
-                    display_name:    speaker.display_name.clone(),
+                    display_name,
+                    status:          if seg.speaker_id.is_some() { "confirmed".to_string() } else { "pending".to_string() },
                     start_ms:        (seg.start * 1000.0) as i64,
                     end_ms:          (seg.end   * 1000.0) as i64,
-                    transcript_text: seg.transcript.clone(),
+                    transcript_text: transcript_text.clone(),
                 },
                 speaker_event,
             ));
@@ -183,7 +202,7 @@ async fn handle_chunk(
     {
         use std::collections::HashSet;
         let word_count: u32 = response.segments.iter()
-            .map(|s| s.transcript.split_whitespace().count() as u32)
+            .map(|s| s.transcript.as_deref().unwrap_or("").split_whitespace().count() as u32)
             .sum();
         let speaker_count: u32 = response.segments.iter()
             .map(|s| s.speaker_id)

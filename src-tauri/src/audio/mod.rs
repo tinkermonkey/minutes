@@ -14,7 +14,6 @@ use vad::WebRtcBackend;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
 pub enum VadMode {
     /// Silero VAD v5 via tract-onnx (pure Rust, default).
     #[default]
