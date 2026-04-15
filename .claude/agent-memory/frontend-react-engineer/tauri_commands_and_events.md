@@ -48,6 +48,8 @@ type: project
 | `set_audio_device` | `(deviceName: string) -> void` | Arg key is `deviceName` (camelCase). Sets the active input device. |
 | `set_speech_swift_port` | `(port: number) -> void` | Arg key is `port`. Sets the port speech-swift listens on. Takes effect on next launch. |
 | `retry_health_check` | `() -> bool` | Manually triggers a health check. Returns true if reachable. Used in record.tsx to power the SpeechSwiftErrorPanel retry button. |
+| `get_vad_mode` | `() -> "Silero" \| "WebRtc"` | Returns current VAD backend. Rust serde serializes enum variants as their name strings. Cast result with `as Promise<VadMode>`. |
+| `set_vad_mode` | `(mode: "Silero" \| "WebRtc") -> void` | Arg key is `mode`. Persists VAD backend preference. Takes effect immediately. |
 
 ## Stage 5 — Semantic Search Commands
 

@@ -2,6 +2,7 @@ pub mod devices;
 pub mod health;
 pub mod search;
 pub mod sessions;
+pub mod settings;
 pub mod speakers;
 
 use tauri::Manager;
@@ -257,6 +258,17 @@ async fn run_pipeline(
         .expect("preferred_device mutex poisoned")
         .clone();
 
+    // Read the persisted VAD mode (default Silero) before spawning.
+    let vad_mode = {
+        let state = app_handle.state::<AppState>();
+        let conn = state.db.lock().expect("db mutex poisoned");
+        db::settings::get(&conn, "vad_mode")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str::<VadMode>(&s).ok())
+            .unwrap_or(VadMode::Silero)
+    };
+
     // Resolve the Silero model path from the Tauri resource directory.
     // Falls back to WebRTC VAD if the path cannot be determined.
     let model_path = app_handle
@@ -280,9 +292,10 @@ async fn run_pipeline(
         // Keep _stream alive for the duration of the thread.
         let crate::audio::capture::CaptureHandle { rx: mut sample_rx, _stream } = capture;
 
-        // Build the DynChunker: Silero by default, WebRTC fallback.
+        // Build the DynChunker using the persisted VAD mode.
+        // Falls back to WebRTC when resource_dir is unavailable regardless of setting.
         let mut chunker = match model_path {
-            Some(ref p) => DynChunker::new(VadMode::Silero, p),
+            Some(ref p) => DynChunker::new(vad_mode, p),
             None => {
                 eprintln!("VAD: resource_dir unavailable, falling back to WebRTC VAD");
                 DynChunker::new(VadMode::WebRtc, std::path::Path::new(""))

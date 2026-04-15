@@ -1,7 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
-import { Drawer, DrawerHeader, DrawerItems, Label, Select, TextInput } from 'flowbite-react';
+import { Drawer, DrawerHeader, DrawerItems, Label, Select, TextInput, ToggleSwitch } from 'flowbite-react';
 import type { AudioDevice } from '../types/device';
+
+type VadMode = 'Silero' | 'WebRtc';
 
 interface Props {
   isOpen: boolean;
@@ -46,6 +48,19 @@ export function SettingsDrawer({ isOpen, onClose }: Props) {
     },
   });
 
+  const { data: vadMode, isLoading: vadModeLoading } = useQuery<VadMode>({
+    queryKey: ['vad_mode'],
+    queryFn: (): Promise<VadMode> => invoke<string>('get_vad_mode') as Promise<VadMode>,
+  });
+
+  const setVadMode = useMutation({
+    mutationFn: (mode: VadMode): Promise<void> =>
+      invoke('set_vad_mode', { mode }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vad_mode'] });
+    },
+  });
+
   // The currently active selection: user preference, or fall back to the
   // system default, or the first device in the list.
   const defaultDevice = devices.find(d => d.is_default);
@@ -82,6 +97,19 @@ export function SettingsDrawer({ isOpen, onClose }: Props) {
             </Select>
             <p className="text-xs text-gray-500">
               Takes effect on the next recording session.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label>VAD Mode</Label>
+            <ToggleSwitch
+              checked={vadMode === 'Silero'}
+              disabled={vadModeLoading || setVadMode.isPending}
+              label={vadMode === 'Silero' ? 'Silero' : 'WebRTC'}
+              onChange={(checked) => setVadMode.mutate(checked ? 'Silero' : 'WebRtc')}
+            />
+            <p className="text-xs text-gray-500">
+              Silero is more accurate; WebRTC is lighter weight and works without the bundled model.
             </p>
           </div>
 

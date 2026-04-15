@@ -153,6 +153,8 @@ pub fn run() {
             commands::sessions::get_segments,
             commands::sessions::delete_all_sessions,
             commands::search::search_segments,
+            commands::settings::get_vad_mode,
+            commands::settings::set_vad_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

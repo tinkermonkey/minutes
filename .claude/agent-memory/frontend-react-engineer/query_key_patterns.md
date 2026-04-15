@@ -15,6 +15,9 @@ type: project
 | `['session', sessionId]` | Single session by numeric ID. |
 | `['segments', sessionId]` | All segments for a session. |
 | `['audio_devices']` | List of audio input devices. Invalidated by `set_audio_device` mutation. |
+| `['preferred_device']` | User's saved audio device preference. Invalidated by `set_audio_device` mutation. |
+| `['speech_swift_port']` | speech-swift port string. Optimistic update via `setQueryData` on field change; persisted on blur. |
+| `['vad_mode']` | VAD backend: `"Silero"` or `"WebRtc"`. Invalidated by `set_vad_mode` mutation. |
 
 ## Convention
 
