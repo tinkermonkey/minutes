@@ -29,8 +29,11 @@ pub struct SpeechAccumulator {
 /// buffer, so slow-path results can be matched back to DB segment IDs.
 pub struct AppendedChunk {
     /// Index into `frames` where this chunk's samples begin (inclusive).
+    /// Available for future frame-extraction use; slow-path currently matches by time range.
+    #[allow(dead_code)]
     pub frame_start: usize,
     /// Exclusive end index into `frames`.
+    #[allow(dead_code)]
     pub frame_end: usize,
     /// Session-relative start time for this chunk (ms).
     #[allow(dead_code)]

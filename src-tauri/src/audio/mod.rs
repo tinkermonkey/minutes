@@ -77,6 +77,7 @@ impl DynChunker {
         }
     }
 
+    #[allow(dead_code)]
     pub fn reset(&mut self) {
         match self {
             DynChunker::WebRtc(c) => c.reset(),

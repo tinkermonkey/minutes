@@ -76,6 +76,7 @@ impl<B: VadBackend> Chunker<B> {
 
     /// Reset all per-session state: VAD backend hidden state, frame buffer, and
     /// sample counters.  Called between sessions so a new recording starts clean.
+    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.vad.reset();
         self.frame_buf.clear();

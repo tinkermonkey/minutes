@@ -57,6 +57,7 @@ pub async fn transcribe_chunk(
 pub struct SpeakerRecord {
     pub id:           i64,
     pub display_name: Option<String>,
+    #[allow(dead_code)]
     pub notes:        Option<String>,
 }
 
