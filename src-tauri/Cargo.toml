@@ -37,6 +37,9 @@ tract-onnx = "0.21"
 fastembed = "4"
 hound = "3"
 
+[features]
+debug-audio = []
+
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
