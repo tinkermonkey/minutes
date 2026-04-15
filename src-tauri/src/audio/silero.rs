@@ -35,8 +35,15 @@ pub struct SileroBackend {
 impl SileroBackend {
     /// Load the Silero ONNX model from `model_path`.
     pub fn new(model_path: &Path) -> anyhow::Result<Self> {
+        // Declare concrete input shapes so tract's ToTypedTranslator can
+        // perform static analysis during optimization. Without these hints,
+        // tract fails to infer shapes from the ONNX model's dynamic dims.
         let model = tract_onnx::onnx()
             .model_for_path(model_path)?
+            .with_input_fact(0, f32::fact([1usize, FRAME_SAMPLES]).into())?   // input  f32[1, 512]
+            .with_input_fact(1, i64::fact([] as [usize; 0]).into())?          // sr     i64 scalar
+            .with_input_fact(2, f32::fact(H_SHAPE).into())?                   // h      f32[2, 1, 64]
+            .with_input_fact(3, f32::fact(H_SHAPE).into())?                   // c      f32[2, 1, 64]
             .into_optimized()?
             .into_runnable()?;
 
