@@ -2,7 +2,7 @@
 //!
 //! Silero v5 specifics:
 //! - Frame: 512 samples at 16 kHz (32 ms)
-//! - Inputs:  `input` f32[1,512], `sr` i64 scalar, `h` f32[2,1,64], `c` f32[2,1,64]
+//! - Inputs:  `input` f32[1,512], `h` f32[2,1,64], `c` f32[2,1,64]  (sr removed in v5)
 //! - Outputs: `output` f32[1,1] (voiced probability), `hn` f32[2,1,64], `cn` f32[2,1,64]
 //! - Voiced if output[0] > 0.5
 
@@ -38,12 +38,12 @@ impl SileroBackend {
         // Declare concrete input shapes so tract's ToTypedTranslator can
         // perform static analysis during optimization. Without these hints,
         // tract fails to infer shapes from the ONNX model's dynamic dims.
+        // Silero v5 has 3 inputs — sr was removed and is now baked in at 16 kHz.
         let model = tract_onnx::onnx()
             .model_for_path(model_path)?
             .with_input_fact(0, f32::fact([1usize, FRAME_SAMPLES]).into())?   // input  f32[1, 512]
-            .with_input_fact(1, i64::fact([] as [usize; 0]).into())?          // sr     i64 scalar
-            .with_input_fact(2, f32::fact(H_SHAPE).into())?                   // h      f32[2, 1, 64]
-            .with_input_fact(3, f32::fact(H_SHAPE).into())?                   // c      f32[2, 1, 64]
+            .with_input_fact(1, f32::fact(H_SHAPE).into())?                   // h      f32[2, 1, 64]
+            .with_input_fact(2, f32::fact(H_SHAPE).into())?                   // c      f32[2, 1, 64]
             .into_optimized()?
             .into_runnable()?;
 
@@ -79,12 +79,9 @@ impl VadBackend for SileroBackend {
         };
         let input: Tensor = input_arr.into();
 
-        // Sample rate: int64 scalar
-        let sr: Tensor = tract_ndarray::arr0::<i64>(16_000).into();
-
+        // Silero v5: sr is baked in at 16 kHz — no sr input tensor.
         let inputs = tvec![
             input.into(),
-            sr.into(),
             self.h.clone().into(),
             self.c.clone().into(),
         ];
