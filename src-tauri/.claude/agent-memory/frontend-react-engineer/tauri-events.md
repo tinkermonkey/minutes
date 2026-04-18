@@ -25,19 +25,19 @@ Fired when a VAD chunk produces a transcript segment. Fast-path; speaker may not
 
 Consumed in `routes/record.tsx`: appended to `segments` state.
 
-### `speaker_resolved` (added 2026-04-12)
-Fired by the slow-path long-clip diarization once speaker identity is known for a previously-pending segment.
+### `segments_replaced` (replaces `speaker_resolved` as of 2026-04-16)
+Fired by the slow-path long-clip diarization when a batch of pending segments is atomically replaced with fully-resolved segments.
 
 ```typescript
 {
-  segment_id:    number;   // matches Segment.id
-  speaker_id:    number;
-  speaker_label: string;
-  display_name:  string | null;
+  removed_ids: number[];   // Segment.id values to remove from state
+  added:       Segment[];  // replacement segments (fully resolved, status 'confirmed')
 }
 ```
 
-Consumed in `routes/record.tsx`: finds segment by `segment_id` and updates `speaker_id`, `speaker_label`, `display_name`, `status: 'confirmed'` in place via `setSegments` map.
+Consumed in `RecordingContext.tsx`: filters out `removed_ids`, appends non-empty `added` segments. No buffering needed — `segments_replaced` always arrives after its corresponding `segment_added` events.
+
+**`speaker_resolved` no longer exists.** Do not reference it.
 
 ### `new_speaker`
 Fired when speech-swift registers a previously-unseen speaker. Triggers `NewSpeakerBanner`.
@@ -78,6 +78,6 @@ Consumed in two places:
 
 ---
 
-**Why:** Dual-stream architecture: VAD chunks arrive fast with no speaker (pending), a later long-clip pass resolves speaker identity and fires `speaker_resolved`.
+**Why:** Dual-stream architecture: VAD chunks arrive fast with no speaker (pending), a later long-clip pass atomically replaces them via `segments_replaced`. The replacement model is simpler than the old `speaker_resolved` patch-in-place: remove old IDs, append new segments.
 
 **How to apply:** Always handle `speaker_id: null` and `status: 'pending'` in any component that renders segments. Never assume a segment has a speaker when it first arrives.

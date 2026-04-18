@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useQueryClient, useMutation } from '@tanstack/react-query';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -39,6 +39,8 @@ interface RecordingContextValue {
   accumulatorTrigger: number;
   fastAccumulatorSecs: number;
   fastAccumulatorTrigger: number;
+  segmentKinds:      Record<number, 'fast' | 'slow'>;
+  replacedBySlowMap: Record<number, Segment[]>;
   showNewSpeakerBanner: boolean;
   setShowNewSpeakerBanner: (show: boolean) => void;
   vadActive: boolean;
@@ -68,6 +70,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const [segments, setSegments]         = useState<Segment[]>([]);
   const [showNewSpeakerBanner, setShowNewSpeakerBanner] = useState(false);
   const [elapsed, setElapsed]           = useState(0);
+  const [segmentKinds,      setSegmentKinds]      = useState<Record<number, 'fast' | 'slow'>>({});
+  const [replacedBySlowMap, setReplacedBySlowMap] = useState<Record<number, Segment[]>>({});
+  const latestSegmentsRef = useRef<Segment[]>([]);
   const [pipelineEntries, setPipelineEntries] = useState<PipelineEntry[]>([]);
   const [accumulatorSecs,        setAccumulatorSecs]        = useState(0);
   const [accumulatorTrigger,     setAccumulatorTrigger]     = useState(10);
@@ -105,20 +110,43 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   }, [sessionState]);
 
   useTauriEvent<Segment>('segment_added', payload => {
+    if (!payload.transcript_text?.trim()) return;
     setSegments(prev => {
-      if (!payload.transcript_text?.trim()) return prev;
       if (prev.some(s => s.id === payload.id)) return prev;
-      return [...prev, payload];
+      const next = [...prev, payload];
+      latestSegmentsRef.current = next;
+      return next;
     });
+    setSegmentKinds(prev => ({ ...prev, [payload.id]: 'fast' }));
   });
 
   useTauriEvent<SegmentsReplacedEvent>('segments_replaced', payload => {
+    const removedSet  = new Set(payload.removed_ids);
+    const removedSegs = latestSegmentsRef.current.filter(s => removedSet.has(s.id));
+    const incoming    = payload.added.filter(s => s.transcript_text?.trim());
+
     setSegments(prev => {
-      const removedSet = new Set(payload.removed_ids);
       const kept = prev.filter(s => !removedSet.has(s.id));
-      const incoming = payload.added.filter(s => s.transcript_text?.trim());
-      return [...kept, ...incoming];
+      const next = [...kept, ...incoming];
+      latestSegmentsRef.current = next;
+      return next;
     });
+
+    if (incoming.length > 0) {
+      setSegmentKinds(prev => {
+        const updates: Record<number, 'fast' | 'slow'> = {};
+        for (const s of incoming) updates[s.id] = 'slow';
+        return { ...prev, ...updates };
+      });
+
+      if (removedSegs.length > 0) {
+        setReplacedBySlowMap(prev => {
+          const updates: Record<number, Segment[]> = {};
+          for (const s of incoming) updates[s.id] = removedSegs;
+          return { ...prev, ...updates };
+        });
+      }
+    }
   });
 
   useTauriEvent<SpeakerNotification>('new_speaker', () => {
@@ -221,6 +249,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setShowNewSpeakerBanner(false);
     setElapsed(0);
     setPipelineEntries([]);
+    setSegmentKinds({});
+    setReplacedBySlowMap({});
+    latestSegmentsRef.current = [];
     setAccumulatorSecs(0);
     setAccumulatorTrigger(10);
     setFastAccumulatorSecs(0);
@@ -241,6 +272,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     language,
     setLanguage,
     segments,
+    segmentKinds,
+    replacedBySlowMap,
     elapsed,
     pipelineEntries,
     accumulatorSecs,

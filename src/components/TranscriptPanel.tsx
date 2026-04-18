@@ -4,11 +4,14 @@ import { SegmentCard } from './SegmentCard';
 import type { Segment } from '../types/transcript';
 
 interface Props {
-  segments:    Segment[];
-  isRecording: boolean;
+  segments:          Segment[];
+  isRecording:       boolean;
+  debugMode:         boolean;
+  segmentKinds:      Record<number, 'fast' | 'slow'>;
+  replacedBySlowMap: Record<number, Segment[]>;
 }
 
-export function TranscriptPanel({ segments, isRecording }: Props) {
+export function TranscriptPanel({ segments, isRecording, debugMode, segmentKinds, replacedBySlowMap }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isAtTopRef   = useRef(true);
 
@@ -72,7 +75,12 @@ export function TranscriptPanel({ segments, isRecording }: Props) {
               transform: `translateY(${vItem.start}px)`,
             }}
           >
-            <SegmentCard segment={reversed[vItem.index]} />
+            <SegmentCard
+              segment={reversed[vItem.index]}
+              debugMode={debugMode}
+              kind={segmentKinds[reversed[vItem.index].id]}
+              replacedSegments={replacedBySlowMap[reversed[vItem.index].id]}
+            />
           </div>
         ))}
       </div>

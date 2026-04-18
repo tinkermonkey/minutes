@@ -19,8 +19,10 @@ emit_events(results).await;
 
 ## Tauri event emission pattern
 Collect events into a `Vec` inside the DB lock scope, emit after releasing:
-- Fast-path segment: `emit_segment_added` + optional `emit_new_speaker`
-- Slow-path resolution: `emit_speaker_resolved` + optional `emit_new_speaker`
+- Fast-path segment: `emit_segment_added(app, SegmentEvent { status: "pending", ... })` + optional `emit_new_speaker`
+- Slow-path replacement: `emit_segments_replaced(app, SegmentsReplacedEvent { removed_ids, added })` + `emit_new_speaker` per new speaker
+
+`emit_segment_speaker_resolved` and `SegmentSpeakerResolvedEvent` have been **removed** (replaced by `segments_replaced`).
 
 ## NewSegment fields (as of migration 4)
 `session_id`, `speaker_id: Option<i64>`, `start_ms`, `end_ms`, `transcript_text`, `status: String` ("pending"|"confirmed"), `chunk_start: Option<f64>`, `chunk_end: Option<f64>`
@@ -38,11 +40,9 @@ Use `.filter_map(|s| s.speaker_id)` not `.map(|s| s.speaker_id)` when building t
 - Never `unwrap()` in production paths
 
 ## Slow-path concurrency model
-The pipeline loop must never `await` slow-path diarization mid-session — that blocks fast-path ASR for 60+ seconds.
-Three-function split in `commands/mod.rs`:
-- `process_long_clip(session_id, AccumulatorClip, app: AppHandle)` — free async fn, owns the clip
-- `handle_long_clip(session_id, &mut accumulator, &app)` — thin wrapper that `drain()`s then `await`s `process_long_clip`. Used ONLY at session end (shutdown context, blocking is OK).
-- `spawn_long_clip(session_id, &mut accumulator, &app)` — `drain()`s and fires `tauri::async_runtime::spawn(...)`. No `await`. Used for all mid-session triggers (threshold and inactivity).
+`run_slow_path` in `commands/mod.rs` takes ownership of `fast_segment_ids: Vec<i64>` (via `std::mem::take`). Call sites always pass `std::mem::take(&mut pending_fast_segment_ids)` so the Vec drains atomically and is ready for the next accumulation window.
+
+Signature: `run_slow_path(session_id, base_url, app, accumulator, fast_segment_ids, language, embed_queue)`
 
 ## Silero VAD / ort API (ort = 2.0.0-rc.9, ndarray 0.16)
 - Session created via `Session::builder()?.commit_from_memory(&[u8])?`
