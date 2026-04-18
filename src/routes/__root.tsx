@@ -32,8 +32,6 @@ function RootLayoutInner() {
     language,
     setLanguage,
     elapsed,
-    accumulatorSecs,
-    accumulatorTrigger,
     vadActive,
     handleStart,
     handleStop,
@@ -60,7 +58,9 @@ function RootLayoutInner() {
         />
         <SessionStatusBadge status={sessionState.status} elapsedMs={elapsed} />
         <AudioMeter active={isRecording} vadActive={vadActive} />
-        <AccumulatorBar secs={accumulatorSecs} trigger={accumulatorTrigger} />
+        <AccumulatorBar
+          sessionId={sessionState.status === 'recording' ? sessionState.sessionId : null}
+        />
         <select
           value={language}
           onChange={e => setLanguage(e.target.value as 'english' | 'auto')}

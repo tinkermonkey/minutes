@@ -13,6 +13,8 @@ pub struct SegmentResponse {
     #[allow(dead_code)]
     pub duration:      f64,
     pub transcript:    Option<String>,
+    /// Speaker match confidence (0.0–1.0). None when speech-swift cannot score.
+    pub best_score:    Option<f32>,
 }
 
 /// Top-level response from `POST /registry/sessions`.
@@ -26,16 +28,20 @@ pub struct SessionResponse {
 /// Submit a WAV chunk to the audio-server for diarization + transcription.
 ///
 /// The bytes are posted as a multipart form field named `audio` with MIME type
-/// `audio/wav`. Returns the parsed segment list on success.
+/// `audio/wav`. `language` is passed as a text field (e.g. `"english"` or
+/// `"auto"`). Returns the parsed segment list on success.
 pub async fn transcribe_chunk(
-    base_url: &str,
+    base_url:  &str,
     wav_bytes: Vec<u8>,
+    language:  &str,
 ) -> anyhow::Result<SessionResponse> {
     let client = reqwest::Client::new();
     let part = reqwest::multipart::Part::bytes(wav_bytes)
         .file_name("chunk.wav")
         .mime_str("audio/wav")?;
-    let form = reqwest::multipart::Form::new().part("file", part);
+    let form = reqwest::multipart::Form::new()
+        .part("file", part)
+        .text("language", language.to_string());
 
     let body = client
         .post(format!("{}/registry/sessions", base_url))
@@ -107,11 +113,16 @@ pub async fn merge_speakers(base_url: &str, src_id: i64, dst_id: i64) -> anyhow:
 /// Delete a speaker from the audio-server registry.
 pub async fn delete_speaker(base_url: &str, speech_swift_id: i64) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    client
+    let resp = client
         .delete(format!("{}/registry/speakers/{}", base_url, speech_swift_id))
         .send()
-        .await?
-        .error_for_status()?;
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    eprintln!("[delete_speaker] status={status} body={body}");
+    if !status.is_success() {
+        anyhow::bail!("delete_speaker: HTTP {status}: {body}");
+    }
     Ok(())
 }
 

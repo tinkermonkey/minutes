@@ -1,13 +1,13 @@
+import { useState, useRef, useEffect } from 'react';
 import type { PipelineEntry, FastPathEntry, SlowPathEntry } from '../types/transcript';
+import { useTauriEvent } from '../hooks/useTauriEvent';
 
 interface Props {
-  entries:            PipelineEntry[];
-  accumulatorSecs:    number;
-  accumulatorTrigger: number;
+  entries: PipelineEntry[];
 }
 
-// Shared grid: badge | time | position | duration | response | speed | detail | count
-const GRID = 'grid grid-cols-[24px_90px_110px_48px_72px_52px_60px_52px] gap-x-3';
+// Shared grid: badge | time | position | duration | response | detail | best score
+const GRID = 'grid grid-cols-[24px_90px_110px_48px_72px_60px_52px] gap-x-3';
 
 function fmtTime(unixMs: number): string {
   return new Date(unixMs).toLocaleTimeString([], {
@@ -53,10 +53,16 @@ function fmtSpeed(clipMs: number, responseMs: number): string {
   return (clipMs / responseMs).toFixed(1) + 'x';
 }
 
+function fmtBestScore(score: number | null | undefined): string {
+  if (score == null) return '—';
+  return score.toFixed(2);
+}
+
 function FastRow({ e }: { e: FastPathEntry }) {
   const clipMs = e.end_ms - e.start_ms;
+  const recognized = e.best_score != null;
   return (
-    <div className={`${GRID} px-2 py-1 text-xs text-gray-700 rounded hover:bg-gray-50`}>
+    <div className={`${GRID} px-2 py-1 text-xs text-gray-700 rounded ${recognized ? 'bg-green-50 hover:bg-green-100' : 'hover:bg-gray-50'}`}>
       <FastBadge />
       <span className="font-mono text-gray-500">{fmtTime(e.sent_at_ms)}</span>
       <span className="font-mono">{fmtPosition(e.start_ms, e.end_ms)}</span>
@@ -71,16 +77,16 @@ function FastRow({ e }: { e: FastPathEntry }) {
       <span className="font-mono text-gray-500">
         {e.response_ms !== undefined ? fmtSpeed(clipMs, e.response_ms) : '—'}
       </span>
-      <span>{e.word_count !== undefined ? `${e.word_count}w` : '—'}</span>
-      <span>{e.speaker_count ?? '—'}</span>
+      <span className="font-mono">{fmtBestScore(e.best_score)}</span>
     </div>
   );
 }
 
 function SlowRow({ e }: { e: SlowPathEntry }) {
   const clipMs = e.clip_speech_secs * 1000;
+  const recognized = e.segment_count != null && e.segment_count > 0;
   return (
-    <div className={`${GRID} px-2 py-1 text-xs text-gray-700 rounded hover:bg-gray-50`}>
+    <div className={`${GRID} px-2 py-1 text-xs text-gray-700 rounded ${recognized ? 'bg-green-50 hover:bg-green-100' : 'hover:bg-gray-50'}`}>
       <SlowBadge />
       <span className="font-mono text-gray-500">{fmtTime(e.sent_at_ms)}</span>
       <span className="font-mono">{fmtPosition(e.start_ms, e.end_ms)}</span>
@@ -95,49 +101,157 @@ function SlowRow({ e }: { e: SlowPathEntry }) {
       <span className="font-mono text-gray-500">
         {e.response_ms !== undefined ? fmtSpeed(clipMs, e.response_ms) : '—'}
       </span>
-      <span>{e.clip_speech_secs.toFixed(1)}s</span>
-      <span>{e.segment_count ?? '—'}</span>
+      <span className="font-mono">{fmtBestScore(e.best_score)}</span>
     </div>
   );
 }
 
-// ── Accumulator fill bar ──────────────────────────────────────────────────────
+// ── Accumulator fill bars ─────────────────────────────────────────────────────
+//
+// Design: AccumulatorBar is self-contained. It listens to accumulator and VAD
+// events directly via refs (zero re-renders per event) and runs a 50 ms ticker
+// that drives the display state. While VAD is active, extra seconds are
+// estimated from wall-clock time so the bars fill smoothly during continuous
+// speech — even though the Rust side only emits real values after 500 ms of
+// trailing silence. When VAD goes inactive the bar freezes at the last estimate
+// so there is no snap-back before the real chunk arrives. When a real event
+// fires it snaps to truth.
 
 interface AccumulatorBarProps {
-  secs:    number;
-  trigger: number;
+  /** Reset key — pass the current session id (or null when idle). */
+  sessionId: number | null;
 }
 
-function AccumulatorBar({ secs, trigger }: AccumulatorBarProps) {
-  if (trigger <= 0) return null;
-  const pct     = Math.min(1, secs / trigger) * 100;
-  const nearFull = pct >= 90;
-  const fillColor = nearFull ? 'bg-amber-400' : 'bg-blue-400';
+export function AccumulatorBar({ sessionId }: AccumulatorBarProps) {
+  // Mutable state — updated synchronously in event handlers, never cause renders.
+  const fastSecsRef        = useRef(0);
+  const lastFastEventAt    = useRef(Date.now());
+  const fastTriggerRef     = useRef(2);
+  const slowSecsRef        = useRef(0);
+  const lastSlowEventAt    = useRef(Date.now());
+  const slowTriggerRef     = useRef(10);
+  const vadActiveSinceRef  = useRef<number | null>(null);
+  // Frozen display values, written by the ticker, read by the VAD-stop handler.
+  const lastDisplayFastRef = useRef(0);
+  const lastDisplaySlowRef = useRef(0);
+
+  // Display state — the only thing that drives re-renders.
+  const [displayFast, setDisplayFast] = useState(0);
+  const [displaySlow, setDisplaySlow] = useState(0);
+  const [fastTrigger,  setFastTrigger]  = useState(2);
+  const [slowTrigger,  setSlowTrigger]  = useState(10);
+
+  // Reset all refs and display when a new session starts.
+  useEffect(() => {
+    const now = Date.now();
+    fastSecsRef.current       = 0;
+    lastFastEventAt.current   = now;
+    slowSecsRef.current       = 0;
+    lastSlowEventAt.current   = now;
+    vadActiveSinceRef.current = null;
+    setDisplayFast(0);
+    setDisplaySlow(0);
+  }, [sessionId]);
+
+  // Real accumulator events — update refs only, no state change here.
+  useTauriEvent<{ speech_secs: number; trigger_secs: number }>(
+    'fast_accumulator_updated',
+    ({ speech_secs, trigger_secs }) => {
+      fastSecsRef.current     = speech_secs;
+      lastFastEventAt.current = Date.now();
+      setFastTrigger(t => t !== trigger_secs ? trigger_secs : t);
+      fastTriggerRef.current  = trigger_secs;
+    },
+  );
+
+  useTauriEvent<{ speech_secs: number; trigger_secs: number }>(
+    'accumulator_updated',
+    ({ speech_secs, trigger_secs }) => {
+      slowSecsRef.current     = speech_secs;
+      lastSlowEventAt.current = Date.now();
+      setSlowTrigger(t => t !== trigger_secs ? trigger_secs : t);
+      slowTriggerRef.current  = trigger_secs;
+    },
+  );
+
+  // VAD state transitions — drive the estimation window.
+  useTauriEvent<boolean>('vad_state', active => {
+    if (active) {
+      vadActiveSinceRef.current = Date.now();
+    } else {
+      // Freeze the bars at the last ticker estimate when speech stops.
+      // The chunker still has ~500 ms of buffered audio; the real chunk
+      // (and the accurate accumulator event) will arrive shortly after.
+      fastSecsRef.current       = lastDisplayFastRef.current;
+      lastFastEventAt.current   = Date.now();
+      slowSecsRef.current       = lastDisplaySlowRef.current;
+      lastSlowEventAt.current   = Date.now();
+      vadActiveSinceRef.current = null;
+    }
+  });
+
+  // 50 ms ticker — the only place where display state is written.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const now        = Date.now();
+      const activeSince = vadActiveSinceRef.current;
+
+      // During speech, estimate additional accumulator fill from wall-clock
+      // time since whichever came later: VAD activation or the last real event.
+      // This correctly handles the case where the fast acc drains mid-speech.
+      const extraFast = activeSince != null
+        ? Math.max(0, now - Math.max(activeSince, lastFastEventAt.current)) / 1000
+        : 0;
+      const extraSlow = activeSince != null
+        ? Math.max(0, now - Math.max(activeSince, lastSlowEventAt.current)) / 1000
+        : 0;
+
+      const nextFast = Math.min(fastSecsRef.current + extraFast, fastTriggerRef.current);
+      const nextSlow = Math.min(slowSecsRef.current + extraSlow, slowTriggerRef.current);
+
+      lastDisplayFastRef.current = nextFast;
+      lastDisplaySlowRef.current = nextSlow;
+      setDisplayFast(nextFast);
+      setDisplaySlow(nextSlow);
+    }, 50);
+    return () => clearInterval(id);
+  }, []); // stable — reads only refs
+
+  const fastPct = fastTrigger > 0 ? Math.min(1, displayFast / fastTrigger) * 100 : 0;
+  const slowPct = slowTrigger > 0 ? Math.min(1, displaySlow / slowTrigger) * 100 : 0;
 
   return (
-    <div className="flex items-center gap-2 px-2 py-1">
-      <span className="text-xs text-gray-500 w-[72px] shrink-0">Accumulator</span>
-      <div className="flex-1 h-2 rounded-full bg-gray-100 overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all duration-300 ${fillColor}`}
-          style={{ width: `${pct}%` }}
-        />
+    <div className="flex flex-1 items-center gap-2">
+      <span className="text-xs text-gray-500 shrink-0">Accumulator</span>
+      <div className="flex-1 flex flex-col gap-[3px]">
+        {/* Fast bar — blue → amber when near full */}
+        <div className="h-[5px] rounded-full bg-gray-100 overflow-hidden">
+          <div
+            className={`h-full rounded-full ${fastPct >= 90 ? 'bg-amber-400' : 'bg-blue-400'}`}
+            style={{ width: `${fastPct}%`, transition: 'width 50ms linear' }}
+          />
+        </div>
+        {/* Slow bar — purple → amber when near full */}
+        <div className="h-[5px] rounded-full bg-gray-100 overflow-hidden">
+          <div
+            className={`h-full rounded-full ${slowPct >= 90 ? 'bg-amber-500' : 'bg-purple-400'}`}
+            style={{ width: `${slowPct}%`, transition: 'width 50ms linear' }}
+          />
+        </div>
       </div>
-      <span className="text-xs text-gray-400 font-mono w-[72px] text-right shrink-0">
-        {secs.toFixed(1)}s / {trigger.toFixed(1)}s
-      </span>
+      <div className="text-xs text-gray-400 font-mono text-right shrink-0 leading-tight">
+        <div>{fastTrigger.toFixed(0)}s</div>
+        <div>{slowTrigger.toFixed(0)}s</div>
+      </div>
     </div>
   );
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function PipelineEventLog({ entries, accumulatorSecs, accumulatorTrigger }: Props) {
+export function PipelineEventLog({ entries }: Props) {
   return (
     <div className="flex flex-col gap-0">
-      {/* Accumulator fill bar — always rendered when trigger is set */}
-      <AccumulatorBar secs={accumulatorSecs} trigger={accumulatorTrigger} />
-
       {entries.length === 0 ? (
         <div className="text-xs text-gray-400 italic px-2 py-1">
           No chunks processed yet.
@@ -152,12 +266,18 @@ export function PipelineEventLog({ entries, accumulatorSecs, accumulatorTrigger 
             <span>Len</span>
             <span>Response</span>
             <span>Speed</span>
-            <span>Words/Speech</span>
-            <span>Count</span>
+            <span>Best score</span>
           </div>
 
-          {/* Rows — newest first */}
-          {[...entries].reverse().map(e =>
+          {/* Rows — newest first.
+               In-flight (no response_ms yet): always show so the user sees the
+               request immediately. Completed: hide noise-only entries. */}
+          {[...entries].reverse().filter(e =>
+            e.response_ms === undefined ||
+            (e.kind === 'fast'
+              ? e.best_score != null
+              : e.segment_count != null && e.segment_count > 0)
+          ).map(e =>
             e.kind === 'fast'
               ? <FastRow key={`fast-${e.start_ms}`} e={e} />
               : <SlowRow key={`slow-${e.start_ms}`} e={e} />

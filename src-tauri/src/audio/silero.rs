@@ -34,7 +34,7 @@ const FRAME_SAMPLES: usize = 512;
 const SAMPLE_RATE: i64 = 16000;
 
 /// Voiced probability threshold.
-const SPEECH_THRESHOLD: f32 = 0.5;
+const SPEECH_THRESHOLD: f32 = 0.4;
 
 /// LSTM state shape [2, 1, 128].
 const STATE_DIM: (usize, usize, usize) = (2, 1, 128);

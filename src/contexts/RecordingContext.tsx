@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { createContext, useContext, useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useQueryClient, useMutation } from '@tanstack/react-query';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -8,14 +8,20 @@ import { useVadState } from '../hooks/useVadState';
 import type {
   Segment,
   SpeakerNotification,
-  SpeakerResolvedEvent,
+  SegmentsReplacedEvent,
   ChunkSentEvent,
   ChunkProcessedEvent,
   PipelineEntry,
   AccumulatorUpdatedEvent,
+  FastAccumulatorUpdatedEvent,
   SlowPathSentEvent,
   SlowPathDoneEvent,
 } from '../types/transcript';
+import type {
+  SpeakerRenamedEvent,
+  SpeakersMergedEvent,
+  SpeakerDeletedEvent,
+} from '../types/speaker';
 
 export type SessionState =
   | { status: 'idle' }
@@ -31,6 +37,8 @@ interface RecordingContextValue {
   pipelineEntries: PipelineEntry[];
   accumulatorSecs: number;
   accumulatorTrigger: number;
+  fastAccumulatorSecs: number;
+  fastAccumulatorTrigger: number;
   showNewSpeakerBanner: boolean;
   setShowNewSpeakerBanner: (show: boolean) => void;
   vadActive: boolean;
@@ -38,7 +46,6 @@ interface RecordingContextValue {
   handleStop: () => Promise<void>;
   isStarting: boolean;
   retryHealth: { mutate: () => void; isPending: boolean };
-  updateSpeakerName: (speakerId: number, displayName: string) => void;
 }
 
 const RecordingContext = createContext<RecordingContextValue | null>(null);
@@ -62,14 +69,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const [showNewSpeakerBanner, setShowNewSpeakerBanner] = useState(false);
   const [elapsed, setElapsed]           = useState(0);
   const [pipelineEntries, setPipelineEntries] = useState<PipelineEntry[]>([]);
-  const [accumulatorSecs,    setAccumulatorSecs]    = useState(0);
-  const [accumulatorTrigger, setAccumulatorTrigger] = useState(10);
+  const [accumulatorSecs,        setAccumulatorSecs]        = useState(0);
+  const [accumulatorTrigger,     setAccumulatorTrigger]     = useState(10);
+  const [fastAccumulatorSecs,    setFastAccumulatorSecs]    = useState(0);
+  const [fastAccumulatorTrigger, setFastAccumulatorTrigger] = useState(2);
 
   const vadActive = useVadState(sessionState.status === 'recording');
-
-  // Buffer for speaker_resolved events that arrive before segment_added has
-  // applied the segment to state. Keyed by segment id.
-  const pendingResolutions = useRef<Map<number, SpeakerResolvedEvent>>(new Map());
 
   const retryHealth = useMutation({
     mutationFn: (): Promise<boolean> => invoke('retry_health_check'),
@@ -103,41 +108,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setSegments(prev => {
       if (!payload.transcript_text?.trim()) return prev;
       if (prev.some(s => s.id === payload.id)) return prev;
-
-      const pending = pendingResolutions.current.get(payload.id);
-      if (pending) {
-        pendingResolutions.current.delete(payload.id);
-        return [...prev, {
-          ...payload,
-          speaker_id:    pending.speaker_id,
-          speaker_label: pending.speaker_label,
-          display_name:  pending.display_name,
-          status:        'confirmed' as const,
-        }];
-      }
       return [...prev, payload];
     });
   });
 
-  useTauriEvent<SpeakerResolvedEvent>('speaker_resolved', payload => {
+  useTauriEvent<SegmentsReplacedEvent>('segments_replaced', payload => {
     setSegments(prev => {
-      const seg = prev.find(s => s.id === payload.segment_id);
-      if (!seg) {
-        pendingResolutions.current.set(payload.segment_id, payload);
-        return prev;
-      }
-      if (seg.status === 'confirmed' && seg.speaker_id === payload.speaker_id) {
-        return prev;
-      }
-      return prev.map(s =>
-        s.id === payload.segment_id
-          ? { ...s,
-              speaker_id:    payload.speaker_id,
-              speaker_label: payload.speaker_label,
-              display_name:  payload.display_name,
-              status:        'confirmed' as const }
-          : s
-      );
+      const removedSet = new Set(payload.removed_ids);
+      const kept = prev.filter(s => !removedSet.has(s.id));
+      const incoming = payload.added.filter(s => s.transcript_text?.trim());
+      return [...kept, ...incoming];
     });
   });
 
@@ -164,7 +144,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         ? { ...entry,
             response_ms:   payload.response_ms,
             word_count:    payload.word_count,
-            speaker_count: payload.speaker_count }
+            speaker_count: payload.speaker_count,
+            best_score:    payload.best_score }
         : entry
     ));
   });
@@ -172,6 +153,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   useTauriEvent<AccumulatorUpdatedEvent>('accumulator_updated', payload => {
     setAccumulatorSecs(payload.speech_secs);
     setAccumulatorTrigger(payload.trigger_secs);
+  });
+
+  useTauriEvent<FastAccumulatorUpdatedEvent>('fast_accumulator_updated', payload => {
+    setFastAccumulatorSecs(payload.speech_secs);
+    setFastAccumulatorTrigger(payload.trigger_secs);
   });
 
   useTauriEvent<SlowPathSentEvent>('slow_path_sent', payload => {
@@ -187,16 +173,46 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   useTauriEvent<SlowPathDoneEvent>('slow_path_done', payload => {
     setPipelineEntries(prev => prev.map(entry =>
       entry.kind === 'slow' && entry.start_ms === payload.start_ms
-        ? { ...entry, response_ms: payload.response_ms, segment_count: payload.segment_count }
+        ? { ...entry, response_ms: payload.response_ms, segment_count: payload.segment_count, best_score: payload.best_score }
         : entry
     ));
   });
 
-  function updateSpeakerName(speakerId: number, displayName: string) {
+  useTauriEvent<SpeakerRenamedEvent>('speaker_renamed', payload => {
     setSegments(prev =>
-      prev.map(s => s.speaker_id === speakerId ? { ...s, display_name: displayName } : s)
+      prev.map(s =>
+        s.speaker_id === payload.speech_swift_id
+          ? { ...s, display_name: payload.display_name }
+          : s
+      )
     );
-  }
+  });
+
+  useTauriEvent<SpeakersMergedEvent>('speakers_merged', payload => {
+    setSegments(prev =>
+      prev.map(s =>
+        s.speaker_id === payload.src_id
+          ? { ...s, speaker_id: payload.dst_id, display_name: payload.dst_display_name }
+          : s
+      )
+    );
+  });
+
+  useTauriEvent<SpeakerDeletedEvent>('speaker_deleted', payload => {
+    setSegments(prev =>
+      prev.map(s =>
+        s.speaker_id === payload.speech_swift_id
+          ? { ...s, speaker_id: null, display_name: null }
+          : s
+      )
+    );
+  });
+
+  useTauriEvent<void>('speaker_registry_reset', () => {
+    setSegments(prev =>
+      prev.map(s => ({ ...s, speaker_id: null, display_name: null }))
+    );
+  });
 
   async function handleStart() {
     const sessionId = await startSession.mutateAsync(language);
@@ -207,7 +223,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setPipelineEntries([]);
     setAccumulatorSecs(0);
     setAccumulatorTrigger(10);
-    pendingResolutions.current.clear();
+    setFastAccumulatorSecs(0);
+    setFastAccumulatorTrigger(2);
   }
 
   async function handleStop() {
@@ -228,6 +245,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     pipelineEntries,
     accumulatorSecs,
     accumulatorTrigger,
+    fastAccumulatorSecs,
+    fastAccumulatorTrigger,
     showNewSpeakerBanner,
     setShowNewSpeakerBanner,
     vadActive,
@@ -235,7 +254,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     handleStop,
     isStarting: startSession.isPending,
     retryHealth: { mutate: () => retryHealth.mutate(), isPending: retryHealth.isPending },
-    updateSpeakerName,
   };
 
   return (

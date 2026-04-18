@@ -16,7 +16,10 @@ export function useRenameSpeaker() {
   return useMutation({
     mutationFn: ({ speechSwiftId, name }: { speechSwiftId: number; name: string }) =>
       invoke('rename_speaker', { speechSwiftId, name }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: SPEAKERS_KEY }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: SPEAKERS_KEY });
+      qc.invalidateQueries({ queryKey: ['segments'] });
+    },
   });
 }
 
@@ -25,7 +28,10 @@ export function useMergeSpeakers() {
   return useMutation({
     mutationFn: ({ srcId, dstId }: { srcId: number; dstId: number }) =>
       invoke('merge_speakers', { srcId, dstId }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: SPEAKERS_KEY }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: SPEAKERS_KEY });
+      qc.invalidateQueries({ queryKey: ['segments'] });
+    },
     onError: (e) => console.error('[merge_speakers]', e),
   });
 }
@@ -35,7 +41,10 @@ export function useDeleteSpeaker() {
   return useMutation({
     mutationFn: (speechSwiftId: number) =>
       invoke('delete_speaker', { speechSwiftId }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: SPEAKERS_KEY }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: SPEAKERS_KEY });
+      qc.invalidateQueries({ queryKey: ['segments'] });
+    },
   });
 }
 
@@ -43,7 +52,10 @@ export function useResetRegistry() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (): Promise<void> => invoke('reset_speaker_registry'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: SPEAKERS_KEY }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: SPEAKERS_KEY });
+      qc.invalidateQueries({ queryKey: ['segments'] });
+    },
   });
 }
 

@@ -10,11 +10,9 @@ export interface Segment {
   status:          'pending' | 'confirmed';
 }
 
-export interface SpeakerResolvedEvent {
-  segment_id:    number;
-  speaker_id:    number;
-  speaker_label: string | null;
-  display_name:  string | null;
+export interface SegmentsReplacedEvent {
+  removed_ids: number[];
+  added:       Segment[];
 }
 
 export interface SpeakerNotification {
@@ -34,6 +32,7 @@ export interface ChunkProcessedEvent {
   response_ms:   number;
   word_count:    number;
   speaker_count: number;
+  best_score?:   number | null;
 }
 
 /** Fast-path entry: one short VAD chunk sent for immediate diarization. */
@@ -45,6 +44,7 @@ export interface FastPathEntry {
   response_ms?:   number;
   word_count?:    number;
   speaker_count?: number;
+  best_score?:    number | null;
 }
 
 /** Slow-path entry: a long accumulator clip sent for accurate diarization. */
@@ -56,11 +56,17 @@ export interface SlowPathEntry {
   sent_at_ms:       number;
   response_ms?:     number;
   segment_count?:   number;
+  best_score?:      number;
 }
 
 export type PipelineEntry = FastPathEntry | SlowPathEntry;
 
 export interface AccumulatorUpdatedEvent {
+  speech_secs:  number;
+  trigger_secs: number;
+}
+
+export interface FastAccumulatorUpdatedEvent {
   speech_secs:  number;
   trigger_secs: number;
 }
@@ -76,4 +82,5 @@ export interface SlowPathDoneEvent {
   start_ms:      number;
   response_ms:   number;
   segment_count: number;
+  best_score?:   number;
 }

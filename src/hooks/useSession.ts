@@ -3,7 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 
 export function useStartSession() {
   return useMutation({
-    mutationFn: (): Promise<number> => invoke('start_session'),
+    mutationFn: (language: string): Promise<number> =>
+      invoke('start_session', { language }),
   });
 }
 

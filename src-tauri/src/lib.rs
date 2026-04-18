@@ -68,18 +68,30 @@ pub fn run() {
             // consistent with speech-swift's state.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let reachable = client::speech_swift::health_check(&base_url).await;
-                {
-                    let state = handle.state::<AppState>();
-                    state
-                        .speech_swift
-                        .lock()
-                        .expect("speech_swift mutex poisoned")
-                        .reachable = reachable;
-                }
-                if !reachable {
-                    let _ = handle.emit("speech_swift_unreachable", ());
-                    return;
+                // Poll until speech-swift is reachable, emitting an unreachable
+                // event on the first failure and a reachable event when it comes up.
+                let mut previously_reachable = true;
+                loop {
+                    let reachable = client::speech_swift::health_check(&base_url).await;
+                    {
+                        let state = handle.state::<AppState>();
+                        state
+                            .speech_swift
+                            .lock()
+                            .expect("speech_swift mutex poisoned")
+                            .reachable = reachable;
+                    }
+                    if reachable {
+                        if !previously_reachable {
+                            let _ = handle.emit("speech_swift_reachable", ());
+                        }
+                        break;
+                    }
+                    if previously_reachable {
+                        let _ = handle.emit("speech_swift_unreachable", ());
+                        previously_reachable = false;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
 
                 // Full registry sync: upsert every known speaker and propagate

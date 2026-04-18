@@ -162,9 +162,10 @@ pub fn reset_all(conn: &Connection) -> anyhow::Result<()> {
 /// Return the audio path of the most-recent sample for this speaker, if any.
 pub fn get_sample_path(conn: &Connection, speech_swift_id: i64) -> anyhow::Result<Option<String>> {
     conn.query_row(
-        "SELECT audio_path FROM speaker_samples
-         WHERE speaker_id = ?1
-         ORDER BY end_ms DESC LIMIT 1",
+        "SELECT ss.audio_path FROM speaker_samples ss
+         JOIN speakers s ON s.id = ss.speaker_id
+         WHERE s.speech_swift_id = ?1
+         ORDER BY ss.end_ms DESC LIMIT 1",
         [speech_swift_id],
         |row| row.get(0),
     )

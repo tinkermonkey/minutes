@@ -1,4 +1,5 @@
-use crate::{client, db, state::AppState};
+use rusqlite::OptionalExtension;
+use crate::{client, db, events, state::AppState};
 
 /// Log `err` to stderr and return it as a `String` for the Tauri command result.
 fn log_err(context: &str, err: impl std::fmt::Display) -> String {
@@ -17,6 +18,7 @@ pub fn get_speakers(
 
 #[tauri::command]
 pub async fn rename_speaker(
+    app: tauri::AppHandle,
     speech_swift_id: i64,
     name: String,
     state: tauri::State<'_, AppState>,
@@ -30,11 +32,17 @@ pub async fn rename_speaker(
         rusqlite::params![name, speech_swift_id],
     )
     .map_err(|e| log_err("rename_speaker/db", e))?;
+    drop(db);
+    events::emit_speaker_renamed(&app, events::SpeakerRenamedEvent {
+        speech_swift_id,
+        display_name: name,
+    });
     Ok(())
 }
 
 #[tauri::command]
 pub async fn merge_speakers(
+    app: tauri::AppHandle,
     src_id: i64,
     dst_id: i64,
     state: tauri::State<'_, AppState>,
@@ -44,11 +52,29 @@ pub async fn merge_speakers(
         .map_err(|e| log_err("merge_speakers", e))?;
     let db = state.db.lock().expect("db mutex poisoned");
     db::speakers::merge_speaker_local(&db, src_id, dst_id)
-        .map_err(|e| log_err("merge_speakers/db", e))
+        .map_err(|e| log_err("merge_speakers/db", e))?;
+    let dst_display_name: Option<String> = db
+        .query_row(
+            "SELECT display_name FROM speakers WHERE speech_swift_id = ?1",
+            rusqlite::params![dst_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .flatten();
+    drop(db);
+    events::emit_speakers_merged(&app, events::SpeakersMergedEvent {
+        src_id,
+        dst_id,
+        dst_display_name,
+    });
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_speaker(
+    app: tauri::AppHandle,
     speech_swift_id: i64,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
@@ -57,11 +83,15 @@ pub async fn delete_speaker(
         .map_err(|e| log_err("delete_speaker", e))?;
     let db = state.db.lock().expect("db mutex poisoned");
     db::speakers::delete_speaker_local(&db, speech_swift_id)
-        .map_err(|e| log_err("delete_speaker/db", e))
+        .map_err(|e| log_err("delete_speaker/db", e))?;
+    drop(db);
+    events::emit_speaker_deleted(&app, events::SpeakerDeletedEvent { speech_swift_id });
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn reset_speaker_registry(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     client::speech_swift::reset_registry(&state.speech_swift_url)
@@ -69,7 +99,10 @@ pub async fn reset_speaker_registry(
         .map_err(|e| log_err("reset_speaker_registry", e))?;
     let db = state.db.lock().expect("db mutex poisoned");
     db::speakers::reset_all(&db)
-        .map_err(|e| log_err("reset_speaker_registry/db", e))
+        .map_err(|e| log_err("reset_speaker_registry/db", e))?;
+    drop(db);
+    events::emit_speaker_registry_reset(&app);
+    Ok(())
 }
 
 #[tauri::command]

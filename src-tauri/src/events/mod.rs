@@ -57,6 +57,9 @@ pub struct ChunkProcessedEvent {
     pub response_ms:   u64,
     pub word_count:    u32,
     pub speaker_count: u32,
+    /// Minimum best_score across all segments in this chunk (worst match).
+    /// None when speech-swift did not return scores.
+    pub best_score:    Option<f32>,
 }
 
 pub fn emit_chunk_sent(app: &tauri::AppHandle, ev: ChunkSentEvent) {
@@ -67,19 +70,16 @@ pub fn emit_chunk_processed(app: &tauri::AppHandle, ev: ChunkProcessedEvent) {
     let _ = app.emit("chunk_processed", ev);
 }
 
-/// Emitted when the slow path resolves a speaker ID for a previously pending
-/// segment. The frontend should find the segment by `segment_id` and update its
-/// speaker label in place.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct SegmentSpeakerResolvedEvent {
-    pub segment_id:    i64,
-    pub speaker_id:    i64,
-    pub speaker_label: Option<String>,
-    pub display_name:  Option<String>,
+/// Emitted when the slow path replaces fast-path segments with its own results.
+/// The frontend should remove segments with `removed_ids` and insert `added`.
+#[derive(serde::Serialize, Clone)]
+pub struct SegmentsReplacedEvent {
+    pub removed_ids: Vec<i64>,
+    pub added:       Vec<SegmentEvent>,
 }
 
-pub fn emit_segment_speaker_resolved(app: &tauri::AppHandle, ev: SegmentSpeakerResolvedEvent) {
-    let _ = app.emit("speaker_resolved", ev);
+pub fn emit_segments_replaced(app: &tauri::AppHandle, ev: SegmentsReplacedEvent) {
+    let _ = app.emit("segments_replaced", ev);
 }
 
 /// Emitted after every accumulator append and after every drain (with speech_secs=0.0 on drain).
@@ -89,6 +89,19 @@ pub struct AccumulatorUpdatedEvent {
     pub speech_secs:  f64,
     /// Seconds at which the accumulator triggers a slow-path flush.
     pub trigger_secs: f64,
+}
+
+/// Emitted after every fast-path accumulator append and after every drain (with speech_secs=0.0 on drain).
+#[derive(serde::Serialize, Clone)]
+pub struct FastAccumulatorUpdatedEvent {
+    /// Seconds of speech currently buffered in the fast-path accumulator.
+    pub speech_secs:  f64,
+    /// Seconds at which the fast-path accumulator triggers a flush.
+    pub trigger_secs: f64,
+}
+
+pub fn emit_fast_accumulator_updated(app: &tauri::AppHandle, ev: FastAccumulatorUpdatedEvent) {
+    let _ = app.emit("fast_accumulator_updated", ev);
 }
 
 /// Emitted just before a slow-path clip is dispatched to speech-swift.
@@ -113,6 +126,9 @@ pub struct SlowPathDoneEvent {
     pub response_ms:   u64,
     /// Number of segments in the slow-path response.
     pub segment_count: u32,
+    /// Minimum best_score across all segments (worst speaker match confidence).
+    /// None when speech-swift did not return scores for any segment.
+    pub best_score:    Option<f32>,
 }
 
 pub fn emit_accumulator_updated(app: &tauri::AppHandle, ev: AccumulatorUpdatedEvent) {
@@ -132,4 +148,55 @@ pub fn emit_slow_path_done(app: &tauri::AppHandle, ev: SlowPathDoneEvent) {
 /// Payload is `null` — the frontend only needs to know the event occurred.
 pub fn emit_speech_swift_unreachable(app: &tauri::AppHandle) {
     let _ = app.emit("speech_swift_unreachable", ());
+}
+
+// ── Speaker mutation events ───────────────────────────────────────────────────
+//
+// Emitted after each speaker management operation so every piece of UI
+// (recording sidebar, speaker registry page, session detail) can react
+// without polling or manual cache invalidation.
+
+/// Emitted after a speaker is successfully renamed in speech-swift and the local DB.
+#[derive(serde::Serialize, Clone)]
+pub struct SpeakerRenamedEvent {
+    pub speech_swift_id: i64,
+    pub display_name:    String,
+}
+
+/// Emitted after two speakers are merged.
+/// `src_id` was absorbed and deleted; `dst_id` is the survivor.
+/// All segments that referenced `src_id` now reference `dst_id`.
+#[derive(serde::Serialize, Clone)]
+pub struct SpeakersMergedEvent {
+    pub src_id:           i64,
+    pub dst_id:           i64,
+    pub dst_display_name: Option<String>,
+}
+
+/// Emitted after a speaker is deleted from speech-swift and the local DB.
+/// Segments that referenced this speaker now have `speaker_id = NULL`.
+#[derive(serde::Serialize, Clone)]
+pub struct SpeakerDeletedEvent {
+    pub speech_swift_id: i64,
+}
+
+/// Emitted after the entire speaker registry is reset.
+/// All speaker associations on segments are now NULL.
+#[derive(serde::Serialize, Clone)]
+pub struct SpeakerRegistryResetEvent {}
+
+pub fn emit_speaker_renamed(app: &tauri::AppHandle, ev: SpeakerRenamedEvent) {
+    let _ = app.emit("speaker_renamed", ev);
+}
+
+pub fn emit_speakers_merged(app: &tauri::AppHandle, ev: SpeakersMergedEvent) {
+    let _ = app.emit("speakers_merged", ev);
+}
+
+pub fn emit_speaker_deleted(app: &tauri::AppHandle, ev: SpeakerDeletedEvent) {
+    let _ = app.emit("speaker_deleted", ev);
+}
+
+pub fn emit_speaker_registry_reset(app: &tauri::AppHandle) {
+    let _ = app.emit("speaker_registry_reset", SpeakerRegistryResetEvent {});
 }

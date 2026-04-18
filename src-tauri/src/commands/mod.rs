@@ -13,7 +13,7 @@ use crate::{
     client::speech_swift,
     db::{self, segments::NewSegment},
     embed,
-    events::{self, SegmentEvent, SpeakerEvent},
+    events::{self, SegmentEvent, SegmentsReplacedEvent, SpeakerEvent},
     state::AppState,
 };
 
@@ -69,8 +69,8 @@ struct AudioChunk {
 /// Send one WAV chunk to the audio-server, persist results to SQLite, compute
 /// embeddings, and fire Tauri events.
 ///
-/// Returns the segment IDs inserted so the caller can feed the slow-path
-/// accumulator.
+/// Returns the segment IDs inserted so the caller can add them to
+/// `pending_fast_segment_ids` for replacement when the slow path fires.
 ///
 /// The DB mutex is acquired, all inserts are done synchronously, and the lock
 /// is released before any `.await`. This is the critical invariant that keeps
@@ -80,6 +80,7 @@ async fn handle_chunk(
     chunk:       AudioChunk,
     app:         &tauri::AppHandle,
     embed_queue: &mut Vec<(i64, String)>,
+    language:    &str,
 ) -> Vec<i64> {
     let audio_path = save_wav_chunk(app, session_id, chunk.start_ms, &chunk.wav_bytes);
 
@@ -96,7 +97,7 @@ async fn handle_chunk(
     });
 
     let t0 = std::time::Instant::now();
-    let response = match speech_swift::transcribe_chunk(&base_url, chunk.wav_bytes).await {
+    let response = match speech_swift::transcribe_chunk(&base_url, chunk.wav_bytes, language).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("speech-swift transcribe error: {e}");
@@ -220,11 +221,15 @@ async fn handle_chunk(
             .map(|s| s.speaker_id)
             .collect::<HashSet<_>>()
             .len() as u32;
+        let best_score: Option<f32> = response.segments.iter()
+            .filter_map(|s| s.best_score)
+            .reduce(f32::min);
         events::emit_chunk_processed(app, events::ChunkProcessedEvent {
             start_ms: chunk.start_ms,
             response_ms,
             word_count,
             speaker_count,
+            best_score,
         });
     }
 
@@ -261,13 +266,18 @@ async fn drain_embed_queue(queue: Vec<(i64, String)>, app: &tauri::AppHandle) {
 /// Process an accumulated speech clip through speech-swift (slow path).
 ///
 /// Drains the accumulator, encodes the frames as WAV, POSTs to speech-swift,
-/// and for each resulting segment finds the overlapping fast-path segment IDs
-/// and updates their `speaker_id` / `status` in SQLite, firing
-/// `speaker_resolved` events so the frontend can update in place.
+/// then deletes the fast-path segments (`fast_segment_ids`) from SQLite and
+/// inserts the slow-path results as fresh `confirmed` segments. Fires a
+/// `segments_replaced` event so the frontend can swap the pending rows for the
+/// authoritative slow-path results.
 async fn run_slow_path(
-    base_url:    &str,
-    app:         &tauri::AppHandle,
-    accumulator: &mut crate::audio::SpeechAccumulator,
+    session_id:       i64,
+    base_url:         &str,
+    app:              &tauri::AppHandle,
+    accumulator:      &mut crate::audio::SpeechAccumulator,
+    fast_segment_ids: Vec<i64>,
+    language:         &str,
+    embed_queue:      &mut Vec<(i64, String)>,
 ) {
     let Some(clip) = accumulator.drain() else { return };
 
@@ -288,7 +298,7 @@ async fn run_slow_path(
     });
 
     let t0 = std::time::Instant::now();
-    let response = match speech_swift::transcribe_chunk(base_url, wav_bytes).await {
+    let response = match speech_swift::transcribe_chunk(base_url, wav_bytes, language).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("slow-path speech-swift error: {e}");
@@ -298,60 +308,178 @@ async fn run_slow_path(
     };
     let response_ms = t0.elapsed().as_millis() as u64;
 
+    let best_score: Option<f32> = response.segments.iter()
+        .filter_map(|s| s.best_score)
+        .reduce(f32::min);
+
     events::emit_slow_path_done(app, events::SlowPathDoneEvent {
         start_ms:      clip.clip_start_ms,
         response_ms,
         segment_count: response.segments.len() as u32,
+        best_score,
     });
 
-    // For each slow-path segment, match it back to overlapping fast-path DB
-    // rows via the accumulator's chunk list and update their speaker_id.
+    // --- DB work: acquire lock, delete fast segments, insert slow segments. ---
     let state = app.state::<AppState>();
     let now_ms = unix_ms();
-    let db = state.db.lock().expect("db mutex poisoned");
 
-    for seg in &response.segments {
-        let Some(speaker_id) = seg.speaker_id else { continue };
+    // Resolve session-time for a speech-swift audio-clip-relative timestamp.
+    // `seg_audio_ms` is milliseconds from the clip's audio origin (silence
+    // stripped). Walk the chunk list to find which raw chunk contributed those
+    // frames, then interpolate the session wall-clock time.
+    //
+    // The fallback handles two edge cases:
+    //   1. `seg_audio_ms` lands exactly on the last chunk's `audio_end_ms`
+    //      (the loop's `< audio_end_ms` guard misses it).
+    //   2. The chunk list is empty (should never happen but is safe).
+    // In both cases we extrapolate from the last chunk rather than adding
+    // a raw audio offset to `clip_start_ms`, which would be incorrect.
+    let audio_to_session_ms = |seg_audio_ms: u64| -> u64 {
+        for ch in &clip.chunks {
+            if ch.audio_start_ms <= seg_audio_ms && seg_audio_ms < ch.audio_end_ms {
+                return ch.session_start_ms + (seg_audio_ms - ch.audio_start_ms);
+            }
+        }
+        // Extrapolate from the last chunk (handles end-of-clip boundary).
+        if let Some(last) = clip.chunks.last() {
+            last.session_start_ms + seg_audio_ms.saturating_sub(last.audio_start_ms)
+        } else {
+            clip.clip_start_ms.saturating_add(seg_audio_ms)
+        }
+    };
 
-        // Convert slow-path segment times (seconds from clip start) to session
-        // ms so we can match against the chunk timeline.
-        let seg_start_ms = clip.clip_start_ms + (seg.start * 1000.0) as u64;
-        let seg_end_ms   = clip.clip_start_ms + (seg.end   * 1000.0) as u64;
+    let (new_segment_events, new_speaker_events): (Vec<SegmentEvent>, Vec<SpeakerEvent>) = {
+        let db = state.db.lock().expect("db mutex poisoned");
 
-        // Collect fast-path DB row IDs whose chunk overlaps this segment.
-        let overlapping_ids: Vec<i64> = clip.chunks.iter()
-            .filter(|ch| ch.session_start_ms < seg_end_ms && ch.session_end_ms > seg_start_ms)
-            .flat_map(|ch| ch.segment_ids.iter().copied())
-            .collect();
-
-        if overlapping_ids.is_empty() {
-            continue;
+        // Delete all fast-path segments (and their embeddings) for this clip.
+        if let Err(e) = db::segments::delete_segments(&db, &fast_segment_ids) {
+            eprintln!("slow-path delete_segments error: {e}");
         }
 
-        // Upsert the speaker so it exists in our local DB before referencing it.
-        let (speaker, _) = match db::speakers::upsert_speaker(&db, speaker_id, now_ms) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("slow-path upsert speaker error: {e}");
-                continue;
-            }
-        };
+        let mut seg_events    = Vec::new();
+        let mut speaker_events = Vec::new();
 
-        for segment_id in overlapping_ids {
-            if let Err(e) = db::segments::update_segment_speaker(&db, segment_id, speaker_id) {
-                eprintln!("slow-path update_segment_speaker error: {e}");
-                continue;
+        for seg in &response.segments {
+            // Skip segments where speech-swift gave no speaker — we have nothing
+            // to confirm without a speaker identity.
+            let Some(speaker_id) = seg.speaker_id else { continue };
+
+            let (speaker, is_new) = match db::speakers::upsert_speaker(&db, speaker_id, now_ms) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("slow-path upsert speaker error: {e}");
+                    continue;
+                }
+            };
+
+            let seg_start_audio_ms = (seg.start * 1000.0) as u64;
+            let seg_end_audio_ms   = (seg.end   * 1000.0) as u64;
+
+            let start_ms = audio_to_session_ms(seg_start_audio_ms) as i64;
+            let end_ms   = audio_to_session_ms(seg_end_audio_ms)   as i64;
+
+            let transcript_text = seg.transcript.clone().unwrap_or_default();
+
+            let segment_id = match db::segments::insert_segment(
+                &db,
+                &NewSegment {
+                    session_id,
+                    speaker_id:       Some(speaker_id),
+                    start_ms,
+                    end_ms,
+                    transcript_text:  transcript_text.clone(),
+                    chunk_start_secs: Some(clip.clip_start_ms as f64 / 1000.0),
+                    chunk_end_secs:   Some(clip.clip_end_ms   as f64 / 1000.0),
+                },
+            ) {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("slow-path insert_segment error: {e}");
+                    continue;
+                }
+            };
+
+            // Try embedding synchronously; on failure defer to drain queue.
+            match embed::embed(&transcript_text) {
+                Ok(vec) => {
+                    let _ = db::segments::insert_segment_embedding(&db, segment_id, &vec);
+                }
+                Err(_) => {
+                    embed_queue.push((segment_id, transcript_text.clone()));
+                }
             }
-            events::emit_segment_speaker_resolved(app, events::SegmentSpeakerResolvedEvent {
-                segment_id,
-                speaker_id,
-                speaker_label: seg.speaker_label.clone(),
-                display_name:  speaker.display_name.clone(),
+
+            seg_events.push(SegmentEvent {
+                id:              segment_id,
+                session_id,
+                speaker_id:      Some(speaker_id),
+                speaker_label:   seg.speaker_label.clone(),
+                display_name:    speaker.display_name.clone(),
+                status:          "confirmed".to_string(),
+                start_ms,
+                end_ms,
+                transcript_text,
             });
+
+            if is_new || speaker.display_name.is_none() {
+                speaker_events.push(SpeakerEvent {
+                    id:              speaker.id,
+                    speech_swift_id: speaker.speech_swift_id,
+                    display_name:    speaker.display_name.clone(),
+                });
+            }
         }
+
+        (seg_events, speaker_events)
+        // `db` MutexGuard dropped here — lock released before any emits.
+    };
+
+    // Emit the replacement event: frontend removes fast-path rows and inserts
+    // the authoritative slow-path segments.
+    events::emit_segments_replaced(app, SegmentsReplacedEvent {
+        removed_ids: fast_segment_ids,
+        added:       new_segment_events,
+    });
+
+    // Emit new_speaker for genuinely new speakers.
+    for ev in new_speaker_events {
+        events::emit_new_speaker(app, ev);
     }
-    // `db` MutexGuard dropped here.
 }
+
+/// Drain the fast-path accumulator, encode the accumulated frames as WAV, send
+/// to speech-swift, and persist the results.
+///
+/// Returns the inserted segment IDs so the caller can add them to
+/// `pending_fast_segment_ids`. Returns `None` if the accumulator is empty.
+async fn run_fast_path(
+    session_id:       i64,
+    app:              &tauri::AppHandle,
+    embed_queue:      &mut Vec<(i64, String)>,
+    fast_accumulator: &mut crate::audio::SpeechAccumulator,
+    language:         &str,
+) -> Option<Vec<i64>> {
+    let clip = fast_accumulator.drain()?;
+    let wav_bytes = crate::audio::chunker::encode_wav(&clip.frames);
+    let audio_chunk = AudioChunk {
+        wav_bytes,
+        speech_frames: Vec::new(), // not consumed by handle_chunk
+        start_ms: clip.clip_start_ms,
+        end_ms:   clip.clip_end_ms,
+    };
+    let ids = handle_chunk(session_id, audio_chunk, app, embed_queue, language).await;
+    // Signal that the fast-path accumulator has been drained.
+    events::emit_fast_accumulator_updated(app, events::FastAccumulatorUpdatedEvent {
+        speech_secs:  0.0,
+        trigger_secs: crate::audio::accumulator::FAST_SPEECH_TRIGGER_SECS,
+    });
+    Some(ids)
+}
+
+/// How long after the fast accumulator reaches its threshold before the fast
+/// path actually fires. Gives the slow path a window to cancel the fast send
+/// via clear-and-cover if both would fire for the same audio.
+const FAST_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Core pipeline task.
 ///
@@ -366,6 +494,7 @@ async fn run_pipeline(
     session_id: i64,
     app_handle: tauri::AppHandle,
     stop_rx:    oneshot::Receiver<()>,
+    language:   String,
 ) {
     // Warm the embedding model in the background so the first segment does not
     // stall while ONNX loads.
@@ -394,7 +523,7 @@ async fn run_pipeline(
             .ok()
             .flatten()
             .and_then(|s| serde_json::from_str::<VadMode>(&s).ok())
-            .unwrap_or(VadMode::Silero)
+            .unwrap_or(VadMode::WebRtc)
     };
 
     // Resolve the Silero model path from the Tauri resource directory.
@@ -491,29 +620,84 @@ async fn run_pipeline(
     // Async consumer: handles network + DB work.
     let mut embed_queue: Vec<(i64, String)> = Vec::new();
     let mut accumulator = crate::audio::SpeechAccumulator::new();
+    // Fast-path accumulator: batches VAD chunks until >= 2 s before sending to
+    // speech-swift. speech-swift requires at least 2 s for speaker recognition.
+    let mut fast_accumulator = crate::audio::SpeechAccumulator::new();
+    // All fast-path segment IDs produced since the last slow-path drain. When
+    // the slow path fires it takes ownership of this list, deletes those fast
+    // segments from the DB, and inserts its own authoritative rows instead.
+    let mut pending_fast_segment_ids: Vec<i64> = Vec::new();
+    // When the fast accumulator crosses its threshold, this is set to
+    // `now + FAST_DEBOUNCE`. The select loop's debounce arm fires the fast path
+    // after the deadline passes. Slow-path triggers clear it (cancel-and-cover).
+    let mut fast_debounce_deadline: Option<tokio::time::Instant> = None;
     let base_url = app_handle.state::<AppState>().speech_swift_url.clone();
 
-    /// Append a processed chunk to the accumulator and trigger the slow path
-    /// if enough speech has built up or the accumulator has gone idle.
-    async fn maybe_run_slow_path(
-        base_url:      &str,
-        app:           &tauri::AppHandle,
-        accumulator:   &mut crate::audio::SpeechAccumulator,
-        speech_frames: Vec<f32>,
-        start_ms:      u64,
-        end_ms:        u64,
-        segment_ids:   Vec<i64>,
+    /// Appends the raw VAD chunk to both accumulators immediately (same frames,
+    /// same timing), arms the fast-path debounce when enough speech has built
+    /// up, and fires the slow path when its threshold is met.
+    ///
+    /// The fast path is NOT fired directly here. Instead, `fast_debounce_deadline`
+    /// is set to `now + FAST_DEBOUNCE` the first time the fast accumulator
+    /// crosses its threshold. The select loop's debounce arm fires fast after
+    /// the deadline passes. If slow triggers before the deadline, it clears the
+    /// deadline (cancel) and applies clear-and-cover.
+    ///
+    /// Fast-path segment IDs are collected into `pending_fast_segment_ids`. When
+    /// the slow path fires it takes ownership of those IDs, deletes the fast
+    /// segments from the DB, and inserts its own authoritative segments instead.
+    async fn maybe_run_fast_path(
+        session_id:               i64,
+        app:                      &tauri::AppHandle,
+        embed_queue:              &mut Vec<(i64, String)>,
+        fast_accumulator:         &mut crate::audio::SpeechAccumulator,
+        slow_accumulator:         &mut crate::audio::SpeechAccumulator,
+        pending_fast_segment_ids: &mut Vec<i64>,
+        fast_debounce_deadline:   &mut Option<tokio::time::Instant>,
+        base_url:                 &str,
+        speech_frames:            Vec<f32>,
+        start_ms:                 u64,
+        end_ms:                   u64,
+        language:                 &str,
     ) {
-        accumulator.append(speech_frames, start_ms, end_ms, segment_ids);
+        // Both accumulators receive the same raw speech frames immediately so
+        // neither is ever starved when the other hasn't reached its threshold.
+        fast_accumulator.append(speech_frames.clone(), start_ms, end_ms);
+        slow_accumulator.append(speech_frames, start_ms, end_ms);
+
+        events::emit_fast_accumulator_updated(app, events::FastAccumulatorUpdatedEvent {
+            speech_secs:  fast_accumulator.speech_secs,
+            trigger_secs: crate::audio::accumulator::FAST_SPEECH_TRIGGER_SECS,
+        });
         events::emit_accumulator_updated(app, events::AccumulatorUpdatedEvent {
-            speech_secs:  accumulator.speech_secs,
+            speech_secs:  slow_accumulator.speech_secs,
             trigger_secs: crate::audio::accumulator::SPEECH_TRIGGER_SECS,
         });
 
-        if accumulator.should_trigger()
-            || accumulator.should_flush_for_inactivity(std::time::Duration::from_secs(20))
+        // Arm the debounce when the fast accumulator first crosses its threshold.
+        // The actual send happens in the select loop's debounce arm after 500 ms.
+        if fast_accumulator.speech_secs >= crate::audio::accumulator::FAST_SPEECH_TRIGGER_SECS
+            && fast_debounce_deadline.is_none()
         {
-            run_slow_path(base_url, app, accumulator).await;
+            *fast_debounce_deadline =
+                Some(tokio::time::Instant::now() + FAST_DEBOUNCE);
+        }
+
+        if slow_accumulator.should_trigger() {
+            // Clear-and-cover: slow fires — cancel the pending fast debounce and
+            // discard the fast accumulator. The slow clip already contains those
+            // frames; sending fast here would duplicate the API call.
+            *fast_debounce_deadline = None;
+            fast_accumulator.drain();
+            events::emit_fast_accumulator_updated(app, events::FastAccumulatorUpdatedEvent {
+                speech_secs:  0.0,
+                trigger_secs: crate::audio::accumulator::FAST_SPEECH_TRIGGER_SECS,
+            });
+            run_slow_path(
+                session_id, base_url, app, slow_accumulator,
+                std::mem::take(pending_fast_segment_ids),
+                language, embed_queue,
+            ).await;
         }
     }
 
@@ -523,36 +707,141 @@ async fn run_pipeline(
             let _ = thread_stop_tx.send(());
             // Drain any remaining chunks the thread flushed before exiting.
             while let Some(chunk) = chunk_rx.recv().await {
-                let speech_frames = chunk.speech_frames.clone();
+                let speech_frames = chunk.speech_frames;
                 let start_ms = chunk.start_ms;
                 let end_ms   = chunk.end_ms;
-                let ids = handle_chunk(session_id, chunk, &app_handle, &mut embed_queue).await;
-                maybe_run_slow_path(
-                    &base_url, &app_handle, &mut accumulator,
-                    speech_frames, start_ms, end_ms, ids,
+                maybe_run_fast_path(
+                    session_id, &app_handle, &mut embed_queue,
+                    &mut fast_accumulator, &mut accumulator,
+                    &mut pending_fast_segment_ids,
+                    &mut fast_debounce_deadline,
+                    &base_url, speech_frames, start_ms, end_ms, &language,
                 ).await;
             }
-            // Final drain at session end.
+            // Clear-and-cover at session end: slow covers the fast accumulator,
+            // so discard fast to avoid sending identical audio twice. Only fire
+            // fast alone when slow has nothing (short session below 10 s threshold).
             if !accumulator.is_empty() {
-                run_slow_path(&base_url, &app_handle, &mut accumulator).await;
+                fast_accumulator.drain();
+                events::emit_fast_accumulator_updated(&app_handle, events::FastAccumulatorUpdatedEvent {
+                    speech_secs:  0.0,
+                    trigger_secs: crate::audio::accumulator::FAST_SPEECH_TRIGGER_SECS,
+                });
+                run_slow_path(
+                    session_id, &base_url, &app_handle, &mut accumulator,
+                    std::mem::take(&mut pending_fast_segment_ids),
+                    &language, &mut embed_queue,
+                ).await;
+            } else if !fast_accumulator.is_empty() {
+                if let Some(ids) =
+                    run_fast_path(session_id, &app_handle, &mut embed_queue, &mut fast_accumulator, &language).await
+                {
+                    pending_fast_segment_ids.extend(ids);
+                }
             }
         }
         _ = async {
-            while let Some(chunk) = chunk_rx.recv().await {
-                let speech_frames = chunk.speech_frames.clone();
-                let start_ms = chunk.start_ms;
-                let end_ms   = chunk.end_ms;
-                let ids = handle_chunk(session_id, chunk, &app_handle, &mut embed_queue).await;
-                maybe_run_slow_path(
-                    &base_url, &app_handle, &mut accumulator,
-                    speech_frames, start_ms, end_ms, ids,
-                ).await;
+            let inactivity_timeout = std::time::Duration::from_secs(20);
+            let mut inactivity_check = tokio::time::interval(std::time::Duration::from_secs(5));
+            inactivity_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                // Snapshot the debounce deadline each iteration. Option<Instant> is
+                // Copy, so this is cheap and avoids a borrow conflict with the mut
+                // refs passed to maybe_run_fast_path in the chunk arm.
+                let debounce_snapshot = fast_debounce_deadline;
+
+                tokio::select! {
+                    biased; // prefer chunk processing over timers
+                    chunk = chunk_rx.recv() => {
+                        match chunk {
+                            Some(chunk) => {
+                                let speech_frames = chunk.speech_frames;
+                                let start_ms = chunk.start_ms;
+                                let end_ms   = chunk.end_ms;
+                                maybe_run_fast_path(
+                                    session_id, &app_handle, &mut embed_queue,
+                                    &mut fast_accumulator, &mut accumulator,
+                                    &mut pending_fast_segment_ids,
+                                    &mut fast_debounce_deadline,
+                                    &base_url, speech_frames, start_ms, end_ms, &language,
+                                ).await;
+                            }
+                            None => break,
+                        }
+                    }
+                    // Debounce arm: fires 500 ms after the fast accumulator crossed
+                    // its threshold (if slow hasn't cancelled it by then).
+                    _ = async {
+                        match debounce_snapshot {
+                            Some(dl) => tokio::time::sleep_until(dl).await,
+                            None     => std::future::pending::<()>().await,
+                        }
+                    } => {
+                        if let Some(ids) =
+                            run_fast_path(session_id, &app_handle, &mut embed_queue, &mut fast_accumulator, &language).await
+                        {
+                            pending_fast_segment_ids.extend(ids);
+                        }
+                        fast_debounce_deadline = None;
+                    }
+                    _ = inactivity_check.tick() => {
+                        // Inactivity flushes require a minimum of 2 s of speech
+                        // before firing. Below that, the clip is too short for
+                        // speech-swift to diarize reliably, and the flush is
+                        // likely a false alarm caused by buffered-but-unprocessed
+                        // chunks that haven't yet updated `last_append_at`. Skipping
+                        // lets those chunks arrive naturally and merge into the next
+                        // accumulation window.
+                        let min_speech = crate::audio::accumulator::FAST_SPEECH_TRIGGER_SECS;
+                        if accumulator.should_flush_for_inactivity(inactivity_timeout)
+                            && accumulator.speech_secs >= min_speech
+                        {
+                            // Clear-and-cover: slow takes priority. Discard the
+                            // fast accumulator rather than sending duplicate audio.
+                            fast_debounce_deadline = None;
+                            fast_accumulator.drain();
+                            events::emit_fast_accumulator_updated(&app_handle, events::FastAccumulatorUpdatedEvent {
+                                speech_secs:  0.0,
+                                trigger_secs: crate::audio::accumulator::FAST_SPEECH_TRIGGER_SECS,
+                            });
+                            run_slow_path(
+                                session_id, &base_url, &app_handle, &mut accumulator,
+                                std::mem::take(&mut pending_fast_segment_ids),
+                                &language, &mut embed_queue,
+                            ).await;
+                        } else if fast_accumulator.should_flush_for_inactivity(inactivity_timeout)
+                            && fast_accumulator.speech_secs >= min_speech
+                        {
+                            if let Some(ids) =
+                                run_fast_path(session_id, &app_handle, &mut embed_queue, &mut fast_accumulator, &language).await
+                            {
+                                pending_fast_segment_ids.extend(ids);
+                            }
+                            fast_debounce_deadline = None;
+                        }
+                    }
+                }
             }
         } => {
             // Capture thread exited on its own (e.g. device disconnected).
-            // Final drain at session end.
+            // Same clear-and-cover rule: slow covers fast at exit.
             if !accumulator.is_empty() {
-                run_slow_path(&base_url, &app_handle, &mut accumulator).await;
+                fast_accumulator.drain();
+                events::emit_fast_accumulator_updated(&app_handle, events::FastAccumulatorUpdatedEvent {
+                    speech_secs:  0.0,
+                    trigger_secs: crate::audio::accumulator::FAST_SPEECH_TRIGGER_SECS,
+                });
+                run_slow_path(
+                    session_id, &base_url, &app_handle, &mut accumulator,
+                    std::mem::take(&mut pending_fast_segment_ids),
+                    &language, &mut embed_queue,
+                ).await;
+            } else if !fast_accumulator.is_empty() {
+                if let Some(ids) =
+                    run_fast_path(session_id, &app_handle, &mut embed_queue, &mut fast_accumulator, &language).await
+                {
+                    pending_fast_segment_ids.extend(ids);
+                }
             }
         }
     }
@@ -566,9 +855,12 @@ async fn run_pipeline(
 /// returns the session id so the frontend can track and stop it later.
 #[tauri::command]
 pub async fn start_session(
-    app:   tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
+    app:      tauri::AppHandle,
+    state:    tauri::State<'_, AppState>,
+    language: Option<String>,
 ) -> Result<i64, String> {
+    let language = language.unwrap_or_else(|| "english".to_string());
+
     let now_ms = unix_ms();
     let session_id = {
         let db = state.db.lock().expect("db mutex poisoned");
@@ -589,7 +881,7 @@ pub async fn start_session(
 
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
-        run_pipeline(session_id, app_clone, stop_rx).await;
+        run_pipeline(session_id, app_clone, stop_rx, language).await;
     });
 
     Ok(session_id)

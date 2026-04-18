@@ -129,15 +129,29 @@ mod tests {
         conn.last_insert_rowid()
     }
 
+    /// Insert a segment with a unique time range derived from the text hash so
+    /// repeated calls never trigger the dedup guard.
     fn seed_segment(conn: &Connection, session_id: i64, text: &str) -> i64 {
+        // Use a simple monotonically increasing approach: count existing rows.
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM segments WHERE session_id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let start_ms = n * 1000;
+        let end_ms   = start_ms + 1000;
         insert_segment(
             conn,
             &NewSegment {
                 session_id,
-                speaker_id:      1,
-                start_ms:        0,
-                end_ms:          1000,
-                transcript_text: text.into(),
+                speaker_id:       Some(1),
+                start_ms,
+                end_ms,
+                transcript_text:  text.into(),
+                chunk_start_secs: None,
+                chunk_end_secs:   None,
             },
         )
         .unwrap()

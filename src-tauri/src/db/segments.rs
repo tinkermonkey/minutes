@@ -28,13 +28,12 @@ pub struct NewSegment {
 /// Insert a transcript segment and return its new row id.
 ///
 /// Sets `status = 'pending'` when `speaker_id` is None, `'confirmed'`
-/// otherwise. `chunk_start` and `chunk_end` store the enclosing VAD chunk's
-/// session-relative position so the slow path can match long-clip segments back
-/// to fast-path rows.
+/// otherwise. `chunk_start` and `chunk_end` store the enclosing clip's
+/// session-relative bounds for debugging and future tooling.
 pub fn insert_segment(conn: &Connection, seg: &NewSegment) -> anyhow::Result<i64> {
     // Guard against duplicate segments (speech-swift occasionally returns the
     // same time-range segment twice in one response). Return the existing row's
-    // ID so the caller can still wire up speaker resolution correctly.
+    // ID so the dedup is transparent to the caller.
     let existing_id: Option<i64> = conn.query_row(
         "SELECT id FROM segments WHERE session_id = ?1 AND start_ms = ?2 AND end_ms = ?3",
         rusqlite::params![seg.session_id, seg.start_ms, seg.end_ms],
@@ -66,8 +65,9 @@ pub fn insert_segment(conn: &Connection, seg: &NewSegment) -> anyhow::Result<i64
 
 /// Set `speaker_id` and mark `status = 'confirmed'` on a segment.
 ///
-/// Called by the slow path after a long-clip diarization resolves a speaker ID
-/// for a previously pending segment.
+/// Retained for potential use by the axum REST layer or future tooling;
+/// the pipeline now uses the delete-and-reinsert model instead.
+#[allow(dead_code)]
 pub fn update_segment_speaker(
     conn: &Connection,
     segment_id: i64,
@@ -109,6 +109,31 @@ pub fn get_segments_with_speakers(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// Delete segments (and their embeddings) by ID. A no-op for empty slices.
+pub fn delete_segments(conn: &Connection, ids: &[i64]) -> anyhow::Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    // Build a parameterised IN list. rusqlite doesn't support slice params directly.
+    let placeholders = ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let params: Vec<&dyn rusqlite::ToSql> =
+        ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+    conn.execute(
+        &format!("DELETE FROM segment_embeddings WHERE segment_id IN ({placeholders})"),
+        params.as_slice(),
+    )?;
+    conn.execute(
+        &format!("DELETE FROM segments WHERE id IN ({placeholders})"),
+        params.as_slice(),
+    )?;
+    Ok(())
 }
 
 /// Insert a 384-dim embedding for a segment into the sqlite-vec virtual table.
@@ -268,6 +293,77 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn delete_segments_removes_rows_and_embeddings() {
+        let (conn, _dir) = open_test_db();
+        conn.execute(
+            "INSERT INTO sessions (created_at, source) VALUES (1000, 'mic')",
+            [],
+        )
+        .unwrap();
+        let session_id = conn.last_insert_rowid();
+
+        let id1 = insert_segment(
+            &conn,
+            &NewSegment {
+                session_id,
+                speaker_id: None,
+                start_ms: 0,
+                end_ms: 500,
+                transcript_text: "hello".into(),
+                chunk_start_secs: None,
+                chunk_end_secs: None,
+            },
+        )
+        .unwrap();
+        let id2 = insert_segment(
+            &conn,
+            &NewSegment {
+                session_id,
+                speaker_id: None,
+                start_ms: 500,
+                end_ms: 1000,
+                transcript_text: "world".into(),
+                chunk_start_secs: None,
+                chunk_end_secs: None,
+            },
+        )
+        .unwrap();
+
+        // Insert embeddings for both.
+        let embedding = vec![0.0f32; 384];
+        insert_segment_embedding(&conn, id1, &embedding).unwrap();
+        insert_segment_embedding(&conn, id2, &embedding).unwrap();
+
+        // Delete only id1.
+        delete_segments(&conn, &[id1]).expect("delete");
+
+        let seg_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM segments WHERE session_id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(seg_count, 1, "one segment should remain");
+
+        let embed_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM segment_embeddings WHERE segment_id = ?1",
+                [id1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(embed_count, 0, "embedding for deleted segment should be gone");
+    }
+
+    #[test]
+    fn delete_segments_noop_on_empty_slice() {
+        let (conn, _dir) = open_test_db();
+        // Should not error even with no rows in the DB.
+        delete_segments(&conn, &[]).expect("no-op delete should not error");
     }
 
     #[test]

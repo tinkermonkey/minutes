@@ -113,7 +113,7 @@ function SpeakerRow({
 }
 
 export function SessionSpeakersSidebar() {
-  const { segments, updateSpeakerName } = useRecording();
+  const { segments } = useRecording();
   const rename = useRenameSpeaker();
 
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -157,7 +157,6 @@ export function SessionSpeakersSidebar() {
       { speechSwiftId: editingId, name: draftName.trim() },
       {
         onSuccess: () => {
-          updateSpeakerName(editingId, draftName.trim());
           setEditingId(null);
           setDraftName('');
         },

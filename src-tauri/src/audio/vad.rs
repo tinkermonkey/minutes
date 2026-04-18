@@ -113,11 +113,11 @@ impl<B: VadBackend> VadClassifier<B> {
 
     /// How many consecutive silent frames trigger a flush.
     ///
-    /// Scales to 500 ms regardless of the backend's frame duration.
+    /// Scales to 200 ms regardless of the backend's frame duration.
     fn silence_flush_frames(&self) -> u32 {
         let frame_ms = self.backend.frame_size() * 1_000 / 16_000;
-        // 500 ms / frame_duration_ms, minimum 1
-        (500 / frame_ms.max(1)) as u32
+        // 200 ms / frame_duration_ms, minimum 1
+        (200 / frame_ms.max(1)) as u32
     }
 
     /// Maximum number of samples kept in the silence-pad buffer.
@@ -225,8 +225,8 @@ mod tests {
     #[test]
     fn silence_flush_frames_webrtc() {
         let vad = VadClassifier::new(WebRtcBackend::new());
-        // 500 ms / 10 ms = 50 frames
-        assert_eq!(vad.silence_flush_frames(), 50);
+        // 200 ms / 10 ms = 20 frames
+        assert_eq!(vad.silence_flush_frames(), 20);
     }
 
     #[test]
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn mock_voiced_then_silence_flushes() {
         // 10 voiced frames (512 samples each, 32 ms) then 16 silent ones
-        // should trigger a flush at the 16th silence frame (500ms threshold).
+        // should trigger a flush at the 10th silence frame (300ms threshold).
         let frame_size = 512;
         let voiced: Vec<bool> = vec![true; 10];
         let silent: Vec<bool> = vec![false; 20];
@@ -329,9 +329,9 @@ mod tests {
         assert_eq!(vad.voiced_buf.len(), 10 * frame_size);
 
         // silence_flush_frames for 512-sample frames at 16kHz:
-        // frame_ms = 512 * 1000 / 16000 = 32ms; 500 / 32 = 15 frames
+        // frame_ms = 512 * 1000 / 16000 = 32ms; 200 / 32 = 6 frames
         let expected_flush_frames = vad.silence_flush_frames();
-        assert_eq!(expected_flush_frames, 15);
+        assert_eq!(expected_flush_frames, 6);
 
         let mut flushed = None;
         for i in 0..20 {

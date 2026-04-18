@@ -19,27 +19,33 @@ pub struct SpeechAccumulator {
     pub clip_start_ms: Option<u64>,
     /// Offset in milliseconds for the end of the last appended chunk.
     pub clip_end_ms: Option<u64>,
-    /// Mapping from each appended chunk to its frame offsets in `frames` and
-    /// the segment IDs saved from that chunk. Used during slow-path processing
-    /// to match long-clip segments back to pending DB rows.
+    /// Mapping from each appended chunk to its audio-relative frame offsets and
+    /// session-relative wall time. Used during slow-path processing to convert
+    /// speech-swift's audio-clip-relative timestamps back to session time.
     chunks: Vec<AppendedChunk>,
 }
 
 /// Records where a single fast-path chunk lands in the session timeline so
-/// slow-path results can be matched back to DB segment IDs by time overlap.
+/// slow-path results can map audio-clip-relative timestamps back to session time.
 pub struct AppendedChunk {
     /// Session-relative start time for this chunk (ms).
-    #[allow(dead_code)]
     pub session_start_ms: u64,
-    /// Session-relative end time for this chunk (ms).
-    #[allow(dead_code)]
-    pub session_end_ms: u64,
-    /// The DB segment IDs saved from the fast-path pass for this chunk.
-    pub segment_ids: Vec<i64>,
+    /// Offset (ms) of this chunk's first frame within the concatenated clip
+    /// audio — i.e. how many ms of speech frames preceded this chunk in
+    /// `SpeechAccumulator::frames`. speech-swift timestamps are relative to
+    /// this same audio origin, so overlap checks must use these fields rather
+    /// than the session-relative fields.
+    pub audio_start_ms: u64,
+    /// Offset (ms) of this chunk's last frame within the concatenated clip.
+    pub audio_end_ms: u64,
 }
 
 /// Trigger a slow-path clip after this many seconds of accumulated speech.
 pub const SPEECH_TRIGGER_SECS: f64 = 10.0;
+
+/// Minimum speech duration before sending a fast-path clip to speech-swift.
+/// speech-swift requires at least 2 s of audio to run speaker recognition.
+pub const FAST_SPEECH_TRIGGER_SECS: f64 = 2.0;
 
 impl SpeechAccumulator {
     pub fn new() -> Self {
@@ -57,28 +63,33 @@ impl SpeechAccumulator {
     ///
     /// `speech_only` must be the no-pad samples from `VadClassifier`.
     /// `chunk_start_ms` / `chunk_end_ms` are the wall positions of the chunk
-    /// in the session timeline. `segment_ids` are the DB row IDs of the
-    /// fast-path segments saved from this chunk (may be empty if the fast path
-    /// produced no transcript).
+    /// in the session timeline.
     pub fn append(
         &mut self,
         speech_only: Vec<f32>,
         chunk_start_ms: u64,
         chunk_end_ms: u64,
-        segment_ids: Vec<i64>,
     ) {
         if self.clip_start_ms.is_none() {
             self.clip_start_ms = Some(chunk_start_ms);
         }
         self.clip_end_ms = Some(chunk_end_ms);
         self.speech_secs += speech_only.len() as f64 / 16_000.0;
+
+        // Measure audio-relative offsets from the frame buffer length before
+        // and after the extend. speech-swift timestamps are in this same
+        // audio-only coordinate space (silence stripped), so overlap checks in
+        // run_slow_path must compare against these — not session wall-clock ms.
+        let audio_start_ms = (self.frames.len() as u64 * 1000) / 16_000;
         self.frames.extend(speech_only);
+        let audio_end_ms = (self.frames.len() as u64 * 1000) / 16_000;
+
         self.last_append_at = Some(std::time::Instant::now());
 
         self.chunks.push(AppendedChunk {
             session_start_ms: chunk_start_ms,
-            session_end_ms: chunk_end_ms,
-            segment_ids,
+            audio_start_ms,
+            audio_end_ms,
         });
     }
 
@@ -138,13 +149,12 @@ impl Default for SpeechAccumulator {
 pub struct AccumulatorClip {
     /// Raw f32 speech-only samples at 16 kHz mono.
     pub frames: Vec<f32>,
-    /// Chunk-to-frame mapping for retroactive speaker resolution.
+    /// Per-chunk timing map: used by `run_slow_path` to convert speech-swift's
+    /// audio-clip-relative timestamps back to session wall-clock time.
     pub chunks: Vec<AppendedChunk>,
     /// Session-relative start of this clip in milliseconds.
-    #[allow(dead_code)]
     pub clip_start_ms: u64,
     /// Session-relative end of this clip in milliseconds.
-    #[allow(dead_code)]
     pub clip_end_ms: u64,
 }
 
@@ -166,11 +176,11 @@ mod tests {
     #[test]
     fn append_sets_clip_bounds() {
         let mut acc = SpeechAccumulator::new();
-        acc.append(make_frames(160), 0, 10, vec![]);
+        acc.append(make_frames(160), 0, 10);
         assert_eq!(acc.clip_start_ms, Some(0));
         assert_eq!(acc.clip_end_ms, Some(10));
 
-        acc.append(make_frames(160), 10, 20, vec![]);
+        acc.append(make_frames(160), 10, 20);
         // clip_start stays at first append
         assert_eq!(acc.clip_start_ms, Some(0));
         assert_eq!(acc.clip_end_ms, Some(20));
@@ -179,7 +189,7 @@ mod tests {
     #[test]
     fn drain_resets_accumulator() {
         let mut acc = SpeechAccumulator::new();
-        acc.append(make_frames(160), 0, 10, vec![]);
+        acc.append(make_frames(160), 0, 10);
         let clip = acc.drain().expect("should have clip");
         assert_eq!(clip.clip_start_ms, 0);
         assert_eq!(clip.clip_end_ms, 10);
@@ -189,12 +199,17 @@ mod tests {
     }
 
     #[test]
-    fn drain_includes_chunks() {
+    fn drain_includes_chunks_with_audio_offsets() {
         let mut acc = SpeechAccumulator::new();
-        acc.append(make_frames(160), 0, 10, vec![42]);
+        // 160 frames = 10 ms at 16 kHz
+        acc.append(make_frames(160), 0, 10);
+        acc.append(make_frames(160), 10, 20);
         let clip = acc.drain().expect("should have clip");
-        assert_eq!(clip.chunks.len(), 1);
-        assert_eq!(clip.chunks[0].segment_ids, vec![42]);
+        assert_eq!(clip.chunks.len(), 2);
+        assert_eq!(clip.chunks[0].audio_start_ms, 0);
+        assert_eq!(clip.chunks[0].audio_end_ms, 10);
+        assert_eq!(clip.chunks[1].audio_start_ms, 10);
+        assert_eq!(clip.chunks[1].audio_end_ms, 20);
     }
 
     #[test]
@@ -207,14 +222,15 @@ mod tests {
     fn should_trigger_when_enough_speech() {
         let mut acc = SpeechAccumulator::new();
         // 30 s of speech at 16 kHz = 480_000 samples
-        acc.append(make_frames(480_000), 0, 30_000, vec![]);
+        acc.append(make_frames(480_000), 0, 30_000);
         assert!(acc.should_trigger());
     }
 
     #[test]
     fn should_not_trigger_below_threshold() {
         let mut acc = SpeechAccumulator::new();
-        acc.append(make_frames(160_000), 0, 10_000, vec![]);
+        // 9 s of speech at 16 kHz = 144_000 samples — just below the 10 s trigger.
+        acc.append(make_frames(144_000), 0, 9_000);
         assert!(!acc.should_trigger());
     }
 
@@ -227,7 +243,7 @@ mod tests {
     #[test]
     fn inactivity_flush_false_before_timeout() {
         let mut acc = SpeechAccumulator::new();
-        acc.append(make_frames(160), 0, 10, vec![]);
+        acc.append(make_frames(160), 0, 10);
         // Immediately after append; elapsed is ~0, well below 10s threshold.
         assert!(!acc.should_flush_for_inactivity(std::time::Duration::from_secs(10)));
     }

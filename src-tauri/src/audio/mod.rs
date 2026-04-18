@@ -18,10 +18,10 @@ use vad::WebRtcBackend;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub enum VadMode {
-    /// Silero VAD v5 via tract-onnx (pure Rust, default).
-    #[default]
+    /// Silero VAD v5 via tract-onnx (pure Rust).
     Silero,
     /// WebRTC VAD (C library, !Send — kept on OS capture thread).
+    #[default]
     WebRtc,
 }
 
