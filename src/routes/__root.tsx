@@ -33,6 +33,7 @@ function RootLayoutInner() {
     setLanguage,
     elapsed,
     vadActive,
+    micActive,
     handleStart,
     handleStop,
   } = useRecording();
@@ -57,6 +58,18 @@ function RootLayoutInner() {
           onStop={handleStop}
         />
         <SessionStatusBadge status={sessionState.status} elapsedMs={elapsed} />
+        {isRecording && (
+          <div className="flex items-center gap-1.5" title={micActive ? 'Microphone is recording' : 'Microphone inactive'}>
+            <span
+              className={`inline-block w-2.5 h-2.5 rounded-full ${
+                micActive ? 'bg-red-500 animate-pulse' : 'bg-gray-300'
+              }`}
+            />
+            <span className={`text-xs font-medium ${micActive ? 'text-red-600' : 'text-gray-400'}`}>
+              Mic
+            </span>
+          </div>
+        )}
         <AudioMeter active={isRecording} vadActive={vadActive} />
         <AccumulatorBar
           sessionId={sessionState.status === 'recording' ? sessionState.sessionId : null}

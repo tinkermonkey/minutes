@@ -1,6 +1,20 @@
 use rusqlite::OptionalExtension;
 use crate::{client, db, events, state::AppState};
 
+/// A speaker paired with how similar they are to the queried speaker.
+#[derive(Debug, serde::Serialize)]
+pub struct SimilarSpeaker {
+    pub speaker:          db::speakers::SpeakerWithStats,
+    pub similarity_score: f32,
+}
+
+/// Detail view for a single speaker: recent sessions and confirmed segments.
+#[derive(Debug, serde::Serialize)]
+pub struct SpeakerDetail {
+    pub recent_sessions: Vec<db::speakers::SpeakerSession>,
+    pub recent_segments: Vec<db::speakers::SpeakerSegment>,
+}
+
 /// Log `err` to stderr and return it as a `String` for the Tauri command result.
 fn log_err(context: &str, err: impl std::fmt::Display) -> String {
     let msg = err.to_string();
@@ -122,4 +136,61 @@ pub fn get_speaker_sample_path(
 #[tauri::command]
 pub fn read_audio_bytes(path: String) -> Result<Vec<u8>, String> {
     std::fs::read(&path).map_err(|e| format!("read_audio_bytes: {e}"))
+}
+
+/// Return speakers that are acoustically similar to `speech_swift_id`.
+///
+/// Calls `GET /registry/speakers/{id}/similar` on the audio-server and
+/// cross-references each returned id against the local DB. Speakers not found
+/// locally (e.g. not yet upserted) are silently omitted. Returns an empty Vec
+/// when the audio-server responds with 404.
+#[tauri::command]
+pub async fn get_similar_speakers(
+    speech_swift_id: i64,
+    limit:           Option<i32>,
+    state:           tauri::State<'_, AppState>,
+) -> Result<Vec<SimilarSpeaker>, String> {
+    let limit = limit.unwrap_or(10) as i64;
+    let records = client::speech_swift::get_similar_speakers(
+        &state.speech_swift_url,
+        speech_swift_id,
+        limit,
+    )
+    .await
+    .map_err(|e| log_err("get_similar_speakers", e))?;
+
+    // Load all local speakers once and look up by speech_swift_id.
+    let db = state.db.lock().expect("db mutex poisoned");
+    let all_local = db::speakers::list_with_stats(&db)
+        .map_err(|e| log_err("get_similar_speakers/db", e))?;
+    drop(db);
+
+    let result = records
+        .into_iter()
+        .filter_map(|rec| {
+            all_local
+                .iter()
+                .find(|s| s.speech_swift_id == rec.id)
+                .map(|s| SimilarSpeaker {
+                    speaker:          s.clone(),
+                    similarity_score: rec.similarity,
+                })
+        })
+        .collect();
+
+    Ok(result)
+}
+
+/// Return recent sessions and confirmed segments for `speech_swift_id`.
+#[tauri::command]
+pub fn get_speaker_detail(
+    speech_swift_id: i64,
+    state:           tauri::State<'_, AppState>,
+) -> Result<SpeakerDetail, String> {
+    let db = state.db.lock().expect("db mutex poisoned");
+    let recent_sessions = db::speakers::recent_sessions_for_speaker(&db, speech_swift_id, 10)
+        .map_err(|e| log_err("get_speaker_detail/sessions", e))?;
+    let recent_segments = db::speakers::recent_segments_for_speaker(&db, speech_swift_id, 20)
+        .map_err(|e| log_err("get_speaker_detail/segments", e))?;
+    Ok(SpeakerDetail { recent_sessions, recent_segments })
 }

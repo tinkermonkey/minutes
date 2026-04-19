@@ -5,6 +5,7 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useStartSession, useStopSession } from '../hooks/useSession';
 import { useTauriEvent } from '../hooks/useTauriEvent';
 import { useVadState } from '../hooks/useVadState';
+import { useMicState } from '../hooks/useMicState';
 import type {
   Segment,
   SpeakerNotification,
@@ -44,6 +45,7 @@ interface RecordingContextValue {
   showNewSpeakerBanner: boolean;
   setShowNewSpeakerBanner: (show: boolean) => void;
   vadActive: boolean;
+  micActive: boolean;
   handleStart: () => Promise<void>;
   handleStop: () => Promise<void>;
   isStarting: boolean;
@@ -80,6 +82,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const [fastAccumulatorTrigger, setFastAccumulatorTrigger] = useState(2);
 
   const vadActive = useVadState(sessionState.status === 'recording');
+  const micActive = useMicState();
 
   const retryHealth = useMutation({
     mutationFn: (): Promise<boolean> => invoke('retry_health_check'),
@@ -283,6 +286,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     showNewSpeakerBanner,
     setShowNewSpeakerBanner,
     vadActive,
+    micActive,
     handleStart,
     handleStop,
     isStarting: startSession.isPending,

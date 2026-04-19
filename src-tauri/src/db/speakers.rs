@@ -159,6 +159,89 @@ pub fn reset_all(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A session in which a speaker participated, with segment count.
+#[derive(Debug, serde::Serialize)]
+pub struct SpeakerSession {
+    pub id:            i64,
+    pub created_at:    i64,
+    pub label:         Option<String>,
+    pub duration_ms:   Option<i64>,
+    pub segment_count: i64,
+}
+
+/// A confirmed segment for a speaker, joined with its session label.
+#[derive(Debug, serde::Serialize)]
+pub struct SpeakerSegment {
+    pub id:             i64,
+    pub session_id:     i64,
+    pub start_ms:       i64,
+    pub end_ms:         i64,
+    pub transcript_text: String,
+    pub session_label:  Option<String>,
+}
+
+/// Return the most recent sessions a speaker appeared in, with segment counts.
+pub fn recent_sessions_for_speaker(
+    conn:           &Connection,
+    speech_swift_id: i64,
+    limit:          i64,
+) -> anyhow::Result<Vec<SpeakerSession>> {
+    let mut stmt = conn.prepare(
+        r#"
+            SELECT s.id, s.created_at, s.label, s.duration_ms,
+                   COUNT(sg.id) AS segment_count
+            FROM segments sg
+            JOIN sessions s ON s.id = sg.session_id
+            WHERE sg.speaker_id = ?1
+            GROUP BY s.id
+            ORDER BY s.created_at DESC
+            LIMIT ?2
+        "#,
+    )?;
+    let rows = stmt.query_map(rusqlite::params![speech_swift_id, limit], |row| {
+        Ok(SpeakerSession {
+            id:            row.get(0)?,
+            created_at:    row.get(1)?,
+            label:         row.get(2)?,
+            duration_ms:   row.get(3)?,
+            segment_count: row.get(4)?,
+        })
+    })?
+    .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Return the most recent confirmed segments for a speaker across all sessions.
+pub fn recent_segments_for_speaker(
+    conn:           &Connection,
+    speech_swift_id: i64,
+    limit:          i64,
+) -> anyhow::Result<Vec<SpeakerSegment>> {
+    let mut stmt = conn.prepare(
+        r#"
+            SELECT sg.id, sg.session_id, sg.start_ms, sg.end_ms,
+                   sg.transcript_text, s.label AS session_label
+            FROM segments sg
+            JOIN sessions s ON s.id = sg.session_id
+            WHERE sg.speaker_id = ?1 AND sg.status = 'confirmed'
+            ORDER BY sg.session_id DESC, sg.start_ms ASC
+            LIMIT ?2
+        "#,
+    )?;
+    let rows = stmt.query_map(rusqlite::params![speech_swift_id, limit], |row| {
+        Ok(SpeakerSegment {
+            id:              row.get(0)?,
+            session_id:      row.get(1)?,
+            start_ms:        row.get(2)?,
+            end_ms:          row.get(3)?,
+            transcript_text: row.get(4)?,
+            session_label:   row.get(5)?,
+        })
+    })?
+    .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Return the audio path of the most-recent sample for this speaker, if any.
 pub fn get_sample_path(conn: &Connection, speech_swift_id: i64) -> anyhow::Result<Option<String>> {
     conn.query_row(

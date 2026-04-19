@@ -38,6 +38,12 @@ pub fn emit_vad_state(app: &tauri::AppHandle, active: bool) {
     let _ = app.emit("vad_state", active);
 }
 
+/// Emitted when the CPAL microphone capture starts (`true`) or stops (`false`).
+/// This reflects the raw hardware mic state, not VAD speech detection.
+pub fn emit_mic_active(app: &tauri::AppHandle, active: bool) {
+    let _ = app.emit("mic_active", active);
+}
+
 /// Emitted just before a WAV chunk is POSTed to speech-swift.
 #[derive(serde::Serialize, Clone)]
 pub struct ChunkSentEvent {

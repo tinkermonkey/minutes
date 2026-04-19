@@ -160,6 +160,8 @@ pub fn run() {
             commands::speakers::reset_speaker_registry,
             commands::speakers::get_speaker_sample_path,
             commands::speakers::read_audio_bytes,
+            commands::speakers::get_similar_speakers,
+            commands::speakers::get_speaker_detail,
             commands::sessions::get_sessions,
             commands::sessions::get_session,
             commands::sessions::get_segments,
