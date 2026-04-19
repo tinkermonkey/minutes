@@ -139,6 +139,45 @@ pub async fn reset_registry(base_url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// One candidate from `GET /registry/speakers/{id}/similar`.
+/// Field names match the audio-server JSON exactly.
+#[derive(Debug, serde::Deserialize)]
+pub struct SimilarSpeakerRecord {
+    pub id:         i64,
+    pub similarity: f32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SimilarSpeakersResponse {
+    candidates: Vec<SimilarSpeakerRecord>,
+}
+
+/// Fetch speakers similar to `speech_swift_id` from the audio-server.
+///
+/// Returns an empty `Vec` when the server responds with 404 (endpoint not yet
+/// deployed) rather than propagating an error. Any other non-2xx response is
+/// returned as an error.
+pub async fn get_similar_speakers(
+    base_url:       &str,
+    speech_swift_id: i64,
+    limit:          i64,
+) -> anyhow::Result<Vec<SimilarSpeakerRecord>> {
+    let url = format!(
+        "{}/registry/speakers/{}/similar?limit={}",
+        base_url, speech_swift_id, limit
+    );
+    let response = reqwest::get(&url).await?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(Vec::new());
+    }
+    let body = response.error_for_status()?.text().await?;
+    let parsed = serde_json::from_str::<SimilarSpeakersResponse>(&body).map_err(|e| {
+        let preview: String = body.chars().take(1000).collect();
+        anyhow::anyhow!("get_similar_speakers parse error: {e}\nbody: {preview}")
+    })?;
+    Ok(parsed.candidates)
+}
+
 /// Returns `true` if the speech-swift audio-server is reachable and healthy.
 ///
 /// A GET to `/health` returning any 2xx status is considered success. Any

@@ -288,6 +288,7 @@ async fn run_slow_path(
     });
 
     let wav_bytes = crate::audio::chunker::encode_wav(&clip.frames);
+    let audio_path = save_wav_chunk(app, session_id, clip.clip_start_ms, &wav_bytes);
     let speech_secs = clip.frames.len() as f64 / 16_000.0;
 
     events::emit_slow_path_sent(app, events::SlowPathSentEvent {
@@ -358,6 +359,7 @@ async fn run_slow_path(
 
         let mut seg_events    = Vec::new();
         let mut speaker_events = Vec::new();
+        let mut sampled_speakers = std::collections::HashSet::<i64>::new();
 
         for seg in &response.segments {
             // Skip segments where speech-swift gave no speaker — we have nothing
@@ -398,6 +400,18 @@ async fn run_slow_path(
                     continue;
                 }
             };
+
+            // Store one voice sample per speaker per slow-path clip.
+            if sampled_speakers.insert(speaker.id) {
+                let _ = db::samples::insert_speaker_sample(
+                    &db,
+                    speaker.id,
+                    session_id,
+                    start_ms,
+                    end_ms,
+                    &audio_path,
+                );
+            }
 
             // Try embedding synchronously; on failure defer to drain queue.
             match embed::embed(&transcript_text) {
@@ -550,6 +564,7 @@ async fn run_pipeline(
 
         // Keep _stream alive for the duration of the thread.
         let crate::audio::capture::CaptureHandle { rx: mut sample_rx, _stream } = capture;
+        events::emit_mic_active(&vad_app, true);
 
         // Build the DynChunker using the persisted VAD mode.
         // Falls back to WebRTC when resource_dir is unavailable regardless of setting.
@@ -611,6 +626,7 @@ async fn run_pipeline(
             });
         }
 
+        events::emit_mic_active(&vad_app, false);
         // Reset the meter on the frontend when capture ends.
         events::emit_audio_level(&level_app, 0.0);
         // chunk_tx dropped here, closing the channel and signalling the async
