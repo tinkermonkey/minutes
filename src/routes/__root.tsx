@@ -41,7 +41,7 @@ function RootLayoutInner() {
   const isRecording = sessionState.status === 'recording';
 
   const navLinks = [
-    { to: '/record',   label: 'Record'   },
+    { to: '/record',   label: 'Live Session' },
     { to: '/speakers', label: 'Speakers' },
     { to: '/sessions', label: 'Sessions' },
     { to: '/search',   label: 'Search'   },

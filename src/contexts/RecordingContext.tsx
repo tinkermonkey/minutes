@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useQueryClient, useMutation } from '@tanstack/react-query';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { useStartSession, useStopSession } from '../hooks/useSession';
+import { useStartSession, useStopSession, useRenameSession, useResumeSession } from '../hooks/useSession';
 import { useTauriEvent } from '../hooks/useTauriEvent';
 import { useVadState } from '../hooks/useVadState';
 import { useMicState } from '../hooks/useMicState';
@@ -46,8 +46,12 @@ interface RecordingContextValue {
   setShowNewSpeakerBanner: (show: boolean) => void;
   vadActive: boolean;
   micActive: boolean;
-  handleStart: () => Promise<void>;
+  sessionLabel: string;
+  setSessionLabel: (label: string) => void;
+  handleStart: (label?: string) => Promise<void>;
   handleStop: () => Promise<void>;
+  handleResume: (sessionId: number) => Promise<void>;
+  handleRenameSession: (label: string) => void;
   isStarting: boolean;
   retryHealth: { mutate: () => void; isPending: boolean };
 }
@@ -63,12 +67,15 @@ export function useRecording(): RecordingContextValue {
 }
 
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
-  const queryClient  = useQueryClient();
-  const startSession = useStartSession();
-  const stopSession  = useStopSession();
+  const queryClient   = useQueryClient();
+  const startSession  = useStartSession();
+  const stopSession   = useStopSession();
+  const renameSession = useRenameSession();
+  const resumeSession = useResumeSession();
 
   const [sessionState, setSessionState] = useState<SessionState>({ status: 'idle' });
   const [language, setLanguage]         = useState<'english' | 'auto'>('english');
+  const [sessionLabel, setSessionLabel] = useState<string>('');
   const [segments, setSegments]         = useState<Segment[]>([]);
   const [showNewSpeakerBanner, setShowNewSpeakerBanner] = useState(false);
   const [elapsed, setElapsed]           = useState(0);
@@ -245,9 +252,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     );
   });
 
-  async function handleStart() {
-    const sessionId = await startSession.mutateAsync(language);
+  async function handleStart(label?: string) {
+    const sessionId = await startSession.mutateAsync({ language, label });
     setSessionState({ status: 'recording', sessionId, startedAt: new Date() });
+    setSessionLabel(label ?? '');
     setSegments([]);
     setShowNewSpeakerBanner(false);
     setElapsed(0);
@@ -259,6 +267,33 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setAccumulatorTrigger(10);
     setFastAccumulatorSecs(0);
     setFastAccumulatorTrigger(2);
+  }
+
+  async function handleResume(sessionId: number) {
+    await resumeSession.mutateAsync({ sessionId, language });
+    setSessionState({ status: 'recording', sessionId, startedAt: new Date() });
+    setSessionLabel('');
+    setShowNewSpeakerBanner(false);
+    setElapsed(0);
+    setPipelineEntries([]);
+    setSegmentKinds({});
+    setReplacedBySlowMap({});
+    latestSegmentsRef.current = [];
+    setAccumulatorSecs(0);
+    setAccumulatorTrigger(10);
+    setFastAccumulatorSecs(0);
+    setFastAccumulatorTrigger(2);
+    // Load existing segments from the DB for the resumed session
+    const segs = await invoke<Segment[]>('get_segments', { sessionId });
+    setSegments(segs);
+    latestSegmentsRef.current = segs;
+  }
+
+  function handleRenameSession(label: string) {
+    if (sessionState.status !== 'recording' && sessionState.status !== 'stopping') return;
+    const { sessionId } = sessionState;
+    setSessionLabel(label);
+    renameSession.mutate({ sessionId, label });
   }
 
   async function handleStop() {
@@ -287,8 +322,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setShowNewSpeakerBanner,
     vadActive,
     micActive,
+    sessionLabel,
+    setSessionLabel,
     handleStart,
     handleStop,
+    handleResume,
+    handleRenameSession,
     isStarting: startSession.isPending,
     retryHealth: { mutate: () => retryHealth.mutate(), isPending: retryHealth.isPending },
   };
