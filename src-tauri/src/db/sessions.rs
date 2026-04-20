@@ -120,6 +120,19 @@ pub fn list_sessions(
     Ok(SessionsPage { sessions, total_count })
 }
 
+/// Update the label for an existing session.
+pub fn update_session_label(
+    conn: &Connection,
+    session_id: i64,
+    label: &str,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE sessions SET label = ?1 WHERE id = ?2",
+        rusqlite::params![label, session_id],
+    )?;
+    Ok(())
+}
+
 /// Delete all sessions and their associated data from the database.
 ///
 /// Deletes in dependency order: speaker_samples → segments → sessions.

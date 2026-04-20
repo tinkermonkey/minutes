@@ -874,6 +874,7 @@ pub async fn start_session(
     app:      tauri::AppHandle,
     state:    tauri::State<'_, AppState>,
     language: Option<String>,
+    label:    Option<String>,
 ) -> Result<i64, String> {
     let language = language.unwrap_or_else(|| "english".to_string());
 
@@ -881,8 +882,8 @@ pub async fn start_session(
     let session_id = {
         let db = state.db.lock().expect("db mutex poisoned");
         db.execute(
-            "INSERT INTO sessions (created_at, source) VALUES (?1, 'mic')",
-            [now_ms],
+            "INSERT INTO sessions (created_at, source, label) VALUES (?1, 'mic', ?2)",
+            rusqlite::params![now_ms, label],
         )
         .map_err(|e| e.to_string())?;
         db.last_insert_rowid()
@@ -900,6 +901,32 @@ pub async fn start_session(
         run_pipeline(session_id, app_clone, stop_rx, language).await;
     });
 
+    Ok(session_id)
+}
+
+/// Resume recording into an existing session.
+///
+/// Starts the capture pipeline for a session that already exists in SQLite — no
+/// new DB row is created. New segments are appended to the existing session.
+/// Returns the session_id so the frontend can confirm which session is active.
+#[tauri::command]
+pub async fn resume_session(
+    app:        tauri::AppHandle,
+    state:      tauri::State<'_, AppState>,
+    session_id: i64,
+    language:   Option<String>,
+) -> Result<i64, String> {
+    let language = language.unwrap_or_else(|| "english".to_string());
+    let (stop_tx, stop_rx) = oneshot::channel();
+    state
+        .pipelines
+        .lock()
+        .expect("pipelines mutex poisoned")
+        .insert(session_id, stop_tx);
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        run_pipeline(session_id, app_clone, stop_rx, language).await;
+    });
     Ok(session_id)
 }
 

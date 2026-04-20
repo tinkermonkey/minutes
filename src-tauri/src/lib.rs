@@ -147,6 +147,8 @@ pub fn run() {
             get_speech_swift_status,
             commands::start_session,
             commands::stop_session,
+            commands::resume_session,
+            commands::sessions::rename_session,
             commands::devices::get_audio_devices,
             commands::devices::get_preferred_device,
             commands::devices::set_audio_device,

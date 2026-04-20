@@ -27,6 +27,17 @@ pub fn delete_all_sessions(
 }
 
 #[tauri::command]
+pub fn rename_session(
+    session_id: i64,
+    label: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().expect("db mutex poisoned");
+    db::sessions::update_session_label(&db, session_id, &label)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn get_segments(
     session_id: i64,
     state: tauri::State<AppState>,
