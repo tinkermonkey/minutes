@@ -299,7 +299,7 @@ export function RecordRoute() {
             </div>
           </div>
 
-          <SessionSpeakersSidebar />
+          <SessionSpeakersSidebar segments={segments} />
         </div>
       )}
 

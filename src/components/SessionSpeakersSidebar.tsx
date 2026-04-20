@@ -1,6 +1,11 @@
 import { useMemo, useState } from 'react';
-import { useRecording } from '../contexts/RecordingContext';
 import { useRenameSpeaker } from '../hooks/useSpeakers';
+
+interface SegmentForSidebar {
+  speaker_id:    number | null;
+  display_name:  string | null;
+  speaker_label?: string | null;
+}
 
 interface SessionSpeaker {
   speakerId: number;
@@ -112,8 +117,7 @@ function SpeakerRow({
   );
 }
 
-export function SessionSpeakersSidebar() {
-  const { segments } = useRecording();
+export function SessionSpeakersSidebar({ segments }: { segments: SegmentForSidebar[] }) {
   const rename = useRenameSpeaker();
 
   const [editingId, setEditingId] = useState<number | null>(null);
