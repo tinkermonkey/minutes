@@ -1,14 +1,5 @@
 import type { Speaker } from '../../types/speaker';
 
-function CheckIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
-      <circle cx="7" cy="7" r="6.5" stroke="#2563EB" strokeWidth="1.5" fill="#EFF6FF" />
-      <polyline points="4,7 6.5,9.5 10,5" stroke="#2563EB" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 const DOT_COLORS = [
   'bg-blue-500',
   'bg-green-500',
@@ -29,18 +20,22 @@ function formatDate(ms: number) {
 }
 
 interface Props {
-  speaker:          Speaker;
-  isSelected:       boolean;
-  onSelect:         () => void;
-  onOpenDetail:     () => void;
+  speaker:           Speaker;
+  isSelected:        boolean;
+  isChecked:         boolean;
+  onSelect:          () => void;
+  onCheck:           () => void;
+  onOpenDetail:      () => void;
   recentTranscript?: string;
 }
 
-export function SpeakerRow({ speaker, isSelected, onSelect, onOpenDetail, recentTranscript }: Props) {
+export function SpeakerRow({ speaker, isSelected, isChecked, onSelect, onCheck, onOpenDetail, recentTranscript }: Props) {
   const isUnrecognized = speaker.display_name === null;
   const rowBase = 'flex items-center h-12 px-6 gap-3 cursor-pointer border-b border-gray-100 transition-colors';
   const rowColor = isSelected
     ? 'bg-blue-50 border-l-2 border-l-blue-500'
+    : isChecked
+    ? 'bg-indigo-50 border-l-2 border-l-indigo-300'
     : isUnrecognized
     ? 'bg-amber-50 border-l-2 border-l-amber-400'
     : 'hover:bg-gray-50 border-l-2 border-l-transparent';
@@ -52,14 +47,21 @@ export function SpeakerRow({ speaker, isSelected, onSelect, onOpenDetail, recent
 
   return (
     <div className={`${rowBase} ${rowColor}`} onClick={onSelect}>
-      {/* Dot / selected indicator */}
-      <div className="w-5 flex-shrink-0 flex items-center justify-center">
-        {isSelected ? (
-          <CheckIcon />
-        ) : (
-          <div className={`w-2.5 h-2.5 rounded-full ${isUnrecognized ? 'bg-gray-400' : dotColor(speaker.speech_swift_id)}`} />
-        )}
+      {/* Checkbox — click is isolated from the row's panel-open handler */}
+      <div
+        className="w-5 flex-shrink-0 flex items-center justify-center"
+        onClick={e => { e.stopPropagation(); onCheck(); }}
+      >
+        <input
+          type="checkbox"
+          checked={isChecked}
+          onChange={() => {}}
+          className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600 pointer-events-none"
+        />
       </div>
+
+      {/* Color dot */}
+      <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${isUnrecognized ? 'bg-gray-400' : dotColor(speaker.speech_swift_id)}`} />
 
       {/* Speaker name */}
       <button

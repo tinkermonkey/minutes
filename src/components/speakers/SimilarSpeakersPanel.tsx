@@ -26,7 +26,6 @@ function scoreLabel(score: number) {
 interface Props {
   selectedSpeaker: Speaker;
   onClose:         () => void;
-  onMergeSuccess:  () => void;
   onDelete:        (speaker: Speaker) => void;
 }
 
@@ -88,7 +87,7 @@ function SimilarSpeakerCard({ similar, selectedSpeaker, onMergeClick, onDelete }
   );
 }
 
-export function SimilarSpeakersPanel({ selectedSpeaker, onClose, onMergeSuccess, onDelete }: Props) {
+export function SimilarSpeakersPanel({ selectedSpeaker, onClose, onDelete }: Props) {
   const [mergeTarget, setMergeTarget] = useState<Speaker | null>(null);
   const [mergeError, setMergeError] = useState<string | null>(null);
   const { data: similar = [], isLoading } = useSimilarSpeakers(selectedSpeaker.speech_swift_id);
@@ -103,7 +102,6 @@ export function SimilarSpeakersPanel({ selectedSpeaker, onClose, onMergeSuccess,
     try {
       await mergeSpeakers.mutateAsync({ srcId: mergeTarget.speech_swift_id, dstId: selectedSpeaker.speech_swift_id });
       setMergeTarget(null);
-      onMergeSuccess();
     } catch (e) {
       setMergeError(e instanceof Error ? e.message : String(e));
     }
