@@ -19,6 +19,7 @@ export function useRenameSpeaker() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: SPEAKERS_KEY });
       qc.invalidateQueries({ queryKey: ['segments'] });
+      qc.invalidateQueries({ queryKey: ['session'] });
     },
   });
 }

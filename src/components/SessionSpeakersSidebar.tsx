@@ -5,6 +5,7 @@ interface SegmentForSidebar {
   speaker_id:    number | null;
   display_name:  string | null;
   speaker_label?: string | null;
+  status?:       'pending' | 'confirmed';
 }
 
 interface SessionSpeaker {
@@ -126,7 +127,7 @@ export function SessionSpeakersSidebar({ segments }: { segments: SegmentForSideb
   const speakers = useMemo<SessionSpeaker[]>(() => {
     const speakerMap = new Map<number, SessionSpeaker>();
     for (const seg of segments) {
-      if (seg.speaker_id == null) continue;
+      if (seg.speaker_id == null || seg.status === 'pending') continue;
       speakerMap.set(seg.speaker_id, {
         speakerId: seg.speaker_id,
         speakerLabel: seg.speaker_label ?? `Speaker ${seg.speaker_id}`,
@@ -187,13 +188,11 @@ export function SessionSpeakersSidebar({ segments }: { segments: SegmentForSideb
             <div className="px-3 mb-1 text-[10px] font-bold text-gray-400 tracking-wider uppercase">
               Recognized
             </div>
-            {recognized.map(speaker => {
-              const idx = speakers.indexOf(speaker);
-              return (
+            {recognized.map(speaker => (
                 <SpeakerRow
                   key={speaker.speakerId}
                   speaker={speaker}
-                  color={colorFor(idx)}
+                  color={colorFor(speaker.speakerId)}
                   isEditing={editingId === speaker.speakerId}
                   draftName={draftName}
                   isSaving={rename.isPending}
@@ -202,8 +201,7 @@ export function SessionSpeakersSidebar({ segments }: { segments: SegmentForSideb
                   onSave={handleSave}
                   onCancel={cancelEdit}
                 />
-              );
-            })}
+            ))}
           </div>
         )}
 
@@ -212,13 +210,11 @@ export function SessionSpeakersSidebar({ segments }: { segments: SegmentForSideb
             <div className="px-3 mb-1 text-[10px] font-bold text-gray-400 tracking-wider uppercase">
               Unrecognized
             </div>
-            {unrecognized.map(speaker => {
-              const idx = speakers.indexOf(speaker);
-              return (
+            {unrecognized.map(speaker => (
                 <SpeakerRow
                   key={speaker.speakerId}
                   speaker={speaker}
-                  color={colorFor(idx)}
+                  color={colorFor(speaker.speakerId)}
                   isEditing={editingId === speaker.speakerId}
                   draftName={draftName}
                   isSaving={rename.isPending}
@@ -227,8 +223,7 @@ export function SessionSpeakersSidebar({ segments }: { segments: SegmentForSideb
                   onSave={handleSave}
                   onCancel={cancelEdit}
                 />
-              );
-            })}
+            ))}
           </div>
         )}
       </div>
