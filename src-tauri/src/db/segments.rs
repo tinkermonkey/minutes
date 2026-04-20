@@ -71,11 +71,11 @@ pub fn insert_segment(conn: &Connection, seg: &NewSegment) -> anyhow::Result<i64
 pub fn update_segment_speaker(
     conn: &Connection,
     segment_id: i64,
-    speaker_id: i64,
+    speech_swift_id: i64,
 ) -> anyhow::Result<()> {
     conn.execute(
         "UPDATE segments SET speaker_id = ?1, status = 'confirmed' WHERE id = ?2",
-        rusqlite::params![speaker_id, segment_id],
+        rusqlite::params![speech_swift_id, segment_id],
     )?;
     Ok(())
 }

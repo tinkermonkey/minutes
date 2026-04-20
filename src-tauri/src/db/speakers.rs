@@ -106,17 +106,24 @@ pub fn list_with_stats(conn: &Connection) -> anyhow::Result<Vec<SpeakerWithStats
 
 /// Re-point all segments and samples from `src` to `dst`, then delete the src
 /// speaker row. Called after the audio-server merge succeeds.
+///
+/// `segments.speaker_id` stores `speech_swift_id`, so those are updated
+/// directly. `speaker_samples.speaker_id` stores the local `speakers.id`, so
+/// we must resolve both speech_swift_ids to their local ids before updating.
 pub fn merge_speaker_local(
     conn: &Connection,
     src_speech_swift_id: i64,
     dst_speech_swift_id: i64,
 ) -> anyhow::Result<()> {
+    // segments.speaker_id = speech_swift_id — update directly.
     conn.execute(
         "UPDATE segments SET speaker_id = ?1 WHERE speaker_id = ?2",
         [dst_speech_swift_id, src_speech_swift_id],
     )?;
+    // speaker_samples.speaker_id = local speakers.id — resolve before updating.
     conn.execute(
-        "UPDATE speaker_samples SET speaker_id = ?1 WHERE speaker_id = ?2",
+        "UPDATE speaker_samples SET speaker_id = (SELECT id FROM speakers WHERE speech_swift_id = ?1)
+         WHERE speaker_id = (SELECT id FROM speakers WHERE speech_swift_id = ?2)",
         [dst_speech_swift_id, src_speech_swift_id],
     )?;
     conn.execute(
@@ -128,13 +135,19 @@ pub fn merge_speaker_local(
 
 /// NULL-out all segment/sample references to this speaker, then delete the
 /// speaker row. Called after the audio-server delete succeeds.
+///
+/// `segments.speaker_id` stores `speech_swift_id`; `speaker_samples.speaker_id`
+/// stores local `speakers.id` — each must be matched accordingly.
 pub fn delete_speaker_local(conn: &Connection, speech_swift_id: i64) -> anyhow::Result<()> {
+    // segments.speaker_id = speech_swift_id — match directly.
     conn.execute(
         "UPDATE segments SET speaker_id = NULL WHERE speaker_id = ?1",
         [speech_swift_id],
     )?;
+    // speaker_samples.speaker_id = local speakers.id — resolve first.
     conn.execute(
-        "UPDATE speaker_samples SET speaker_id = NULL WHERE speaker_id = ?1",
+        "UPDATE speaker_samples SET speaker_id = NULL
+         WHERE speaker_id = (SELECT id FROM speakers WHERE speech_swift_id = ?1)",
         [speech_swift_id],
     )?;
     conn.execute(
