@@ -79,6 +79,13 @@ export function SpeakerRow({ speaker, isSelected, isChecked, onSelect, onCheck, 
         </span>
       )}
 
+      {/* No audio sample badge — only meaningful for unrecognized speakers */}
+      {isUnrecognized && !speaker.has_sample && (
+        <span className="flex-shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">
+          No audio
+        </span>
+      )}
+
       {/* Session count chip */}
       <span className="flex-shrink-0 text-xs text-gray-500 bg-gray-100 rounded-full px-2 py-0.5">
         {speaker.session_count} {speaker.session_count === 1 ? 'session' : 'sessions'}

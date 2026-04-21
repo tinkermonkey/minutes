@@ -6,6 +6,7 @@ export interface Speaker {
   first_seen_at:   number;   // unix ms
   last_seen_at:    number;   // unix ms
   session_count:   number;
+  has_sample:      boolean;
 }
 
 export interface SpeakerRenamedEvent {

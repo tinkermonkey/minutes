@@ -73,6 +73,9 @@ pub struct SpeakerWithStats {
     pub first_seen_at:   i64,
     pub last_seen_at:    i64,
     pub session_count:   i64,
+    /// Whether at least one audio sample exists for this speaker.
+    /// speaker_samples.speaker_id stores the local speakers.id (s.id).
+    pub has_sample:      bool,
 }
 
 /// List all speakers ordered by most-recently seen, with a session count.
@@ -82,7 +85,11 @@ pub fn list_with_stats(conn: &Connection) -> anyhow::Result<Vec<SpeakerWithStats
             SELECT
                 s.id, s.speech_swift_id, s.display_name, s.notes,
                 s.first_seen_at, s.last_seen_at,
-                COUNT(DISTINCT sg.session_id) AS session_count
+                COUNT(DISTINCT sg.session_id) AS session_count,
+                EXISTS(
+                    SELECT 1 FROM speaker_samples ss
+                    WHERE ss.speaker_id = s.id AND ss.speaker_id IS NOT NULL
+                ) AS has_sample
             FROM speakers s
             LEFT JOIN segments sg ON sg.speaker_id = s.speech_swift_id
             GROUP BY s.id
@@ -90,6 +97,7 @@ pub fn list_with_stats(conn: &Connection) -> anyhow::Result<Vec<SpeakerWithStats
         "#,
     )?;
     let rows = stmt.query_map([], |row| {
+        let has_sample_int: i64 = row.get(7)?;
         Ok(SpeakerWithStats {
             id:              row.get(0)?,
             speech_swift_id: row.get(1)?,
@@ -98,6 +106,7 @@ pub fn list_with_stats(conn: &Connection) -> anyhow::Result<Vec<SpeakerWithStats
             first_seen_at:   row.get(4)?,
             last_seen_at:    row.get(5)?,
             session_count:   row.get(6)?,
+            has_sample:      has_sample_int != 0,
         })
     })?
     .collect::<Result<Vec<_>, _>>()?;
